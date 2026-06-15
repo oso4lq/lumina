@@ -316,7 +316,8 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(r) = &mut self.renderer {
                     let win = r.surface_size();
                     let l = layout::compute(win, self.state.scale, 1.0, false);
-                    let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale);
+                    // временный мост Task 4: миниатюры/raw-флаги подключаются в Task 9
+                    let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale, &[], &[]);
                     if let Err(e) = r.render(&self.state.view, &cmds) {
                         log::warn!("render: {e}");
                     }

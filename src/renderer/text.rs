@@ -1,6 +1,6 @@
 //! Тонкая обёртка над glyphon для рендера текстовых ранов и глифов-иконок.
 
-use crate::ui::scene::{Align, DrawCmd};
+use crate::ui::scene::{Align, DrawCmd, IconFont};
 use glyphon::{
     Attrs, Buffer, Cache, Color, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
     TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -77,14 +77,19 @@ impl TextLayer {
                     let top = rect.y + (rect.h - *size * 1.2) * 0.5;
                     self.buffers.push((buf, left, top, *color));
                 }
-                DrawCmd::Icon { rect, glyph, size, color } => {
+                DrawCmd::Icon { rect, glyph, size, color, font } => {
                     let mut buf = Buffer::new(&mut self.font_system, Metrics::new(*size, *size * 1.2));
                     buf.set_size(&mut self.font_system, Some(rect.w), Some(rect.h));
                     let s = glyph.to_string();
+                    let family = match font {
+                        // Tabler подключим в Task 7; пока оба → Segoe MDL2, чтобы собиралось.
+                        IconFont::WindowMdl2 => crate::ui::scene::ICON_FONT_FAMILY,
+                        IconFont::Tabler => crate::ui::scene::ICON_FONT_FAMILY,
+                    };
                     buf.set_text(
                         &mut self.font_system,
                         &s,
-                        Attrs::new().family(Family::Name(crate::ui::scene::ICON_FONT_FAMILY)),
+                        Attrs::new().family(Family::Name(family)),
                         Shaping::Advanced,
                     );
                     buf.shape_until_scroll(&mut self.font_system, false);
