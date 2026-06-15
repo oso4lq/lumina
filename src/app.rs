@@ -23,6 +23,10 @@ pub struct AppState {
     pub view: ViewTransform,
     pub generation: u64,
     pub last_frame: Instant,
+    pub cursor: glam::Vec2,
+    pub dragging: bool,
+    pub last_cursor: glam::Vec2,
+    pub last_click: Option<(std::time::Instant, glam::Vec2)>,
 }
 
 impl AppState {
@@ -32,6 +36,10 @@ impl AppState {
             view: ViewTransform::new(),
             generation: 0,
             last_frame: Instant::now(),
+            cursor: glam::Vec2::ZERO,
+            dragging: false,
+            last_cursor: glam::Vec2::ZERO,
+            last_click: None,
         }
     }
 }
@@ -75,6 +83,42 @@ impl App {
                 .map_err(|e| e.to_string());
             let _ = proxy.send_event(UserEvent::Decoded { generation, result });
         });
+    }
+
+    /// Навигация по каталогу: -1 prev, +1 next, i32::MIN first, i32::MAX last.
+    fn navigate(&mut self, n: i32) {
+        let moved = if let Some(cat) = &mut self.state.catalog {
+            match n {
+                i32::MIN => { cat.go_first(); true }
+                i32::MAX => { cat.go_last(); true }
+                x if x > 0 => cat.next(),
+                _ => cat.prev(),
+            }
+        } else {
+            false
+        };
+        if moved {
+            self.load_current();
+        }
+    }
+
+    /// Double-click / Ctrl-клавиши: переключить fit ↔ 100% с анимацией.
+    fn toggle_fit(&mut self) {
+        let Some(r) = &self.renderer else { return };
+        let Some(img) = r.image_size() else { return };
+        let win = r.surface_size();
+        let fit = crate::view::fit_zoom(win, img);
+        if self.state.view.is_fit() {
+            // fit → 100%
+            self.state.view.set_fit(false);
+            self.state.view.animate_zoom_to(1.0);
+        } else {
+            // → fit
+            self.state.view.set_fit(true);
+            self.state.view.set_pan(glam::Vec2::ZERO);
+            self.state.view.animate_zoom_to(fit);
+        }
+        if let Some(w) = &self.window { w.request_redraw(); }
     }
 
     /// Открыть файл: построить каталог его папки и начать загрузку.
@@ -177,6 +221,77 @@ impl ApplicationHandler<UserEvent> for App {
                 if self.state.view.is_animating() {
                     if let Some(w) = &self.window {
                         w.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let pos = glam::Vec2::new(position.x as f32, position.y as f32);
+                if self.state.dragging {
+                    let delta = pos - self.state.last_cursor;
+                    let pan = self.state.view.pan() + delta;
+                    self.state.view.set_pan(pan);
+                    if let Some(w) = &self.window { w.request_redraw(); }
+                }
+                self.state.last_cursor = pos;
+                self.state.cursor = pos;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 50.0,
+                };
+                let out = crate::input::on_wheel(&mut self.state.view, self.state.cursor, lines);
+                if out.redraw { if let Some(w) = &self.window { w.request_redraw(); } }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                use winit::event::{ElementState, MouseButton};
+                if button == MouseButton::Left {
+                    match state {
+                        ElementState::Pressed => {
+                            // двойной клик: < 400 мс и малое смещение
+                            let now = std::time::Instant::now();
+                            let dbl = self.state.last_click.map_or(false, |(t, p)| {
+                                now.duration_since(t).as_millis() < 400
+                                    && (p - self.state.cursor).length() < 6.0
+                            });
+                            if dbl {
+                                self.toggle_fit();
+                                self.state.last_click = None;
+                            } else {
+                                self.state.last_click = Some((now, self.state.cursor));
+                                self.state.dragging = true;
+                                if let Some(w) = &self.window {
+                                    w.set_cursor(winit::window::Cursor::Icon(
+                                        winit::window::CursorIcon::Grabbing,
+                                    ));
+                                }
+                            }
+                        }
+                        ElementState::Released => {
+                            self.state.dragging = false;
+                            if let Some(w) = &self.window {
+                                w.set_cursor(winit::window::Cursor::Icon(
+                                    winit::window::CursorIcon::Default,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                use winit::keyboard::{Key, NamedKey};
+                if event.state.is_pressed() {
+                    let nav = match event.logical_key.as_ref() {
+                        Key::Named(NamedKey::ArrowRight) => Some(crate::input::NavKey::Next),
+                        Key::Named(NamedKey::ArrowLeft) => Some(crate::input::NavKey::Prev),
+                        Key::Named(NamedKey::Home) => Some(crate::input::NavKey::First),
+                        Key::Named(NamedKey::End) => Some(crate::input::NavKey::Last),
+                        _ => None,
+                    };
+                    if let Some(k) = nav {
+                        if let Some(n) = crate::input::on_nav_key(k).navigate {
+                            self.navigate(n);
+                        }
                     }
                 }
             }
