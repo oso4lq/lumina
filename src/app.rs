@@ -318,7 +318,7 @@ impl ApplicationHandler<UserEvent> for App {
                     let l = layout::compute(win, self.state.scale, 1.0, false);
                     // временный мост Task 4: миниатюры/raw-флаги подключаются в Task 9
                     let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale, &[], &[]);
-                    if let Err(e) = r.render(&self.state.view, &cmds) {
+                    if let Err(e) = r.render(&self.state.view, &cmds, &[]) {
                         log::warn!("render: {e}");
                     }
                 }
