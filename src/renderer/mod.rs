@@ -1,6 +1,7 @@
 mod context;
 mod pipeline;
 mod text;
+mod thumbnail;
 mod ui_pipeline;
 
 use crate::error::{LuminaError, Result};
