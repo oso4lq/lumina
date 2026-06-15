@@ -1,6 +1,9 @@
 use crate::catalog::FolderCatalog;
 use crate::decoder::DecodedImage;
 use crate::renderer::Renderer;
+use crate::ui::scene::{self, UiState};
+use crate::ui::theme::{self, ThemePalette};
+use crate::ui::{hit, layout};
 use crate::view::ViewTransform;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -37,6 +40,9 @@ pub struct AppState {
     pub last_cursor: glam::Vec2,
     pub last_click: Option<(std::time::Instant, glam::Vec2)>,
     pub ctrl_down: bool,
+    pub ui: UiState,
+    pub theme: ThemePalette,
+    pub scale: f32,
 }
 
 impl AppState {
@@ -52,6 +58,9 @@ impl AppState {
             last_cursor: glam::Vec2::ZERO,
             last_click: None,
             ctrl_down: false,
+            ui: UiState::new(),
+            theme: ThemePalette::dark(),
+            scale: 1.0,
         }
     }
 }
@@ -87,7 +96,8 @@ impl App {
         let proxy = self.proxy.clone();
         if let Some(w) = &self.window {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            w.set_title(&format!("{name} — Lumina"));
+            self.state.ui.title = format!("{name} · Lumina");
+            w.request_redraw();
         }
         let ext = crate::decoder::ext_lower(&path);
         rayon::spawn(move || {
@@ -143,7 +153,7 @@ impl App {
     fn toggle_fit(&mut self) {
         let Some(r) = &self.renderer else { return };
         let Some(img) = r.image_size() else { return };
-        let win = r.surface_size();
+        let win = r.viewer_size();
         let fit = crate::view::fit_zoom(win, img);
         if self.state.view.is_fit() {
             // fit → 100%
@@ -162,7 +172,7 @@ impl App {
     fn set_fit_view(&mut self) {
         let Some(r) = &self.renderer else { return };
         let Some(img) = r.image_size() else { return };
-        let fit = crate::view::fit_zoom(r.surface_size(), img);
+        let fit = crate::view::fit_zoom(r.viewer_size(), img);
         self.state.view.set_fit(true);
         self.state.view.set_pan(glam::Vec2::ZERO);
         self.state.view.animate_zoom_to(fit);
@@ -200,7 +210,11 @@ impl ApplicationHandler<UserEvent> for App {
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create_window"));
         match Renderer::new(window.clone()) {
-            Ok(r) => self.renderer = Some(r),
+            Ok(mut r) => {
+                self.state.scale = window.scale_factor() as f32;
+                r.set_titlebar_height(theme::TITLEBAR_HEIGHT * self.state.scale);
+                self.renderer = Some(r);
+            }
             Err(e) => {
                 log::error!("инициализация рендера провалилась: {e}");
                 event_loop.exit();
@@ -227,7 +241,7 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(r) = &mut self.renderer {
                             let old_img = r.image_size();
                             r.upload_texture(&img.rgba, img.width, img.height);
-                            let win = r.surface_size();
+                            let win = r.viewer_size();
                             if self.state.inited_generation != Some(generation) {
                                 // первый кадр этой генерации → инициализация вида (как v0.1)
                                 let z = crate::view::fit_zoom(win, new_img);
@@ -263,7 +277,7 @@ impl ApplicationHandler<UserEvent> for App {
                     r.resize(size.width, size.height);
                     if let Some(img) = r.image_size() {
                         // fit меняется с размером окна → обновляем нижнюю границу зума
-                        let z = crate::view::fit_zoom(r.surface_size(), img);
+                        let z = crate::view::fit_zoom(r.viewer_size(), img);
                         self.state.view.set_min_zoom(z);
                         // fit прилипает к ресайзу
                         if self.state.view.is_fit() {
@@ -285,8 +299,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.state.last_frame = now;
                 self.state.view.tick(dt);
                 if let Some(r) = &mut self.renderer {
-                    // временный мост Task 8: команды UI подключаются в Task 9
-                    if let Err(e) = r.render(&self.state.view, &[]) {
+                    let win = r.surface_size();
+                    let l = layout::compute(win, self.state.scale);
+                    let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale);
+                    if let Err(e) = r.render(&self.state.view, &cmds) {
                         log::warn!("render: {e}");
                     }
                 }
@@ -303,29 +319,46 @@ impl ApplicationHandler<UserEvent> for App {
                     self.state.view.set_pan(self.state.view.pan() + delta);
                     if let Some(r) = &self.renderer {
                         if let Some(img) = r.image_size() {
-                            self.state.view.clamp_pan(r.surface_size(), img);
+                            self.state.view.clamp_pan(r.viewer_size(), img);
                         }
                     }
                     if let Some(w) = &self.window { w.request_redraw(); }
                 }
                 self.state.last_cursor = pos;
                 self.state.cursor = pos;
+                // hover по кнопкам titlebar
+                if let Some(r) = &self.renderer {
+                    let win = r.surface_size();
+                    let l = layout::compute(win, self.state.scale);
+                    let region = hit::hit(&l, win, pos, self.state.scale);
+                    if region != self.state.ui.hovered {
+                        self.state.ui.hovered = region;
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 50.0,
                 };
-                let win = self.renderer.as_ref().map(|r| r.surface_size());
+                let win = self.renderer.as_ref().map(|r| r.viewer_size());
                 if let Some(win) = win {
-                    let out = crate::input::on_wheel(&mut self.state.view, self.state.cursor, win, lines);
-                    // не допускаем полей по краям после зума к курсору
+                    let cursor_v = self.state.cursor
+                        - glam::Vec2::new(0.0, self.state.scale * theme::TITLEBAR_HEIGHT);
+                    let out = crate::input::on_wheel(&mut self.state.view, cursor_v, win, lines);
                     if let Some(r) = &self.renderer {
                         if let Some(img) = r.image_size() {
                             self.state.view.clamp_pan(win, img);
                         }
                     }
-                    if out.redraw { if let Some(w) = &self.window { w.request_redraw(); } }
+                    if out.redraw {
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -333,6 +366,32 @@ impl ApplicationHandler<UserEvent> for App {
                 if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => {
+                            // клик по кнопкам titlebar имеет приоритет
+                            if let Some(r) = &self.renderer {
+                                let win = r.surface_size();
+                                let l = layout::compute(win, self.state.scale);
+                                match hit::hit(&l, win, self.state.cursor, self.state.scale) {
+                                    hit::Region::Close => {
+                                        event_loop.exit();
+                                        return;
+                                    }
+                                    hit::Region::Minimize => {
+                                        if let Some(w) = &self.window {
+                                            w.set_minimized(true);
+                                        }
+                                        return;
+                                    }
+                                    hit::Region::Maximize => {
+                                        if let Some(w) = &self.window {
+                                            let m = !w.is_maximized();
+                                            w.set_maximized(m);
+                                            self.state.ui.maximized = m;
+                                        }
+                                        return;
+                                    }
+                                    _ => {}
+                                }
+                            }
                             // двойной клик: < 400 мс и малое смещение
                             let now = std::time::Instant::now();
                             let dbl = self.state.last_click.map_or(false, |(t, p)| {
@@ -394,6 +453,15 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ModifiersChanged(mods) => {
                 self.state.ctrl_down = mods.state().control_key();
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.state.scale = scale_factor as f32;
+                if let Some(r) = &mut self.renderer {
+                    r.set_titlebar_height(theme::TITLEBAR_HEIGHT * self.state.scale);
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
             }
             _ => {}
         }
