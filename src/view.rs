@@ -140,6 +140,19 @@ impl ViewTransform {
         self.pan.y = self.pan.y.clamp(-limit_y, limit_y);
     }
 
+    /// Подстроить вид под смену размеров изображения (preview→full),
+    /// сохранив экранный размер. old_img/new_img имеют одинаковое соотношение сторон,
+    /// поэтому коэффициент масштаба не зависит от выбранной оси.
+    pub fn rescale_for_new_image(&mut self, win: Vec2, old_img: Vec2, new_img: Vec2) {
+        if old_img.y > 0.0 && new_img.y > 0.0 {
+            let ratio = old_img.y / new_img.y;
+            self.zoom = (self.zoom * ratio).clamp(ZOOM_MIN, ZOOM_MAX);
+            self.zoom_target = self.zoom;
+        }
+        self.set_min_zoom(fit_zoom(win, new_img)); // подтянет zoom до min при необходимости
+        self.clamp_pan(win, new_img);
+    }
+
     /// Матрица: пиксели изображения → clip space, со вшитыми zoom и pan.
     /// Картинка центрируется в окне, затем сдвигается на pan и масштабируется zoom.
     pub fn matrix(&self, win: Vec2, img: Vec2) -> Mat4 {
@@ -264,5 +277,35 @@ mod tests {
         let v = ViewTransform::new();
         let m = v.matrix(Vec2::new(800.0, 600.0), Vec2::new(400.0, 300.0));
         assert!(m.to_cols_array().iter().all(|c| c.is_finite()));
+    }
+
+    #[test]
+    fn rescale_preserves_screen_size_in_fit() {
+        let win = Vec2::new(1000.0, 800.0);
+        let old_img = Vec2::new(1000.0, 667.0);   // preview
+        let new_img = Vec2::new(6000.0, 4002.0);  // full, то же соотношение
+        let mut v = ViewTransform::new();
+        v.set_min_zoom(fit_zoom(win, old_img));
+        v.set_zoom_immediate(fit_zoom(win, old_img));
+        v.set_fit(true);
+        let screen_before = old_img * v.zoom();
+        v.rescale_for_new_image(win, old_img, new_img);
+        let screen_after = new_img * v.zoom();
+        assert!((screen_before - screen_after).length() < 1.0);
+        assert!((v.zoom() - fit_zoom(win, new_img)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn rescale_preserves_screen_size_when_zoomed() {
+        let win = Vec2::new(1000.0, 800.0);
+        let old_img = Vec2::new(1000.0, 667.0);
+        let new_img = Vec2::new(2000.0, 1334.0);
+        let mut v = ViewTransform::new();
+        v.set_min_zoom(fit_zoom(win, old_img));
+        v.set_zoom_immediate(2.0); // ручной зум сверх fit
+        let screen_before = old_img * v.zoom();
+        v.rescale_for_new_image(win, old_img, new_img);
+        let screen_after = new_img * v.zoom();
+        assert!((screen_before - screen_after).length() < 1.0);
     }
 }
