@@ -1,5 +1,5 @@
 use crate::catalog::FolderCatalog;
-use crate::decoder::{DecodedImage, Decoder};
+use crate::decoder::DecodedImage;
 use crate::renderer::Renderer;
 use crate::view::ViewTransform;
 use std::path::PathBuf;
