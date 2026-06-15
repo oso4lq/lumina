@@ -230,6 +230,33 @@ impl App {
         }
     }
 
+    fn toggle_fullscreen(&mut self) {
+        self.state.ui.fullscreen = !self.state.ui.fullscreen;
+        if let Some(w) = &self.window {
+            let fs = if self.state.ui.fullscreen {
+                Some(winit::window::Fullscreen::Borderless(None))
+            } else {
+                None
+            };
+            w.set_fullscreen(fs);
+            w.request_redraw();
+        }
+        #[cfg(windows)]
+        crate::platform::windows::set_fullscreen(self.state.ui.fullscreen);
+    }
+
+    /// Перейти к файлу по индексу каталога.
+    fn navigate_to(&mut self, index: usize) {
+        let moved = if let Some(cat) = &mut self.state.catalog {
+            cat.go_to(index)
+        } else {
+            false
+        };
+        if moved {
+            self.load_current();
+        }
+    }
+
     /// Запросить декод миниатюр для индексов окна, которых ещё нет.
     fn request_thumbnails(&mut self, window: Vec<usize>) {
         let Some(catalog) = &self.state.catalog else { return };
@@ -470,10 +497,10 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.state.last_cursor = pos;
                 self.state.cursor = pos;
-                // hover по кнопкам titlebar
+                // hover по регионам (titlebar + bottom bar)
                 if let Some(r) = &self.renderer {
                     let win = r.surface_size();
-                    let l = layout::compute(win, self.state.scale, 1.0, false);
+                    let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
                     let region = hit::hit(&l, win, pos, self.state.scale);
                     if region != self.state.ui.hovered {
                         self.state.ui.hovered = region;
@@ -488,20 +515,38 @@ impl ApplicationHandler<UserEvent> for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 50.0,
                 };
-                let win = self.renderer.as_ref().map(|r| r.viewer_size());
-                if let Some(win) = win {
-                    let cursor_v = self.state.cursor
-                        - glam::Vec2::new(0.0, self.state.scale * theme::TITLEBAR_HEIGHT);
-                    let out = crate::input::on_wheel(&mut self.state.view, cursor_v, win, lines);
+                let (win, region) = match &self.renderer {
+                    Some(r) => {
+                        let win = r.surface_size();
+                        let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
+                        (Some(win), hit::hit(&l, win, self.state.cursor, self.state.scale))
+                    }
+                    None => (None, hit::Region::None),
+                };
+                let over_carousel = matches!(region, hit::Region::Carousel | hit::Region::Thumbnail(_));
+                if over_carousel {
+                    // горизонтальный скролл карусели
+                    let step = 60.0 * self.state.scale;
+                    let content = crate::ui::layout::carousel_content_width(self.state.ui.thumb_count, self.state.scale);
+                    let view_w = self.renderer.as_ref().map(|r| {
+                        let win = r.surface_size();
+                        layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen).carousel.w
+                    }).unwrap_or(0.0);
+                    let max_scroll = (content - view_w).max(0.0);
+                    self.state.ui.scroll = (self.state.ui.scroll - lines * step).clamp(0.0, max_scroll);
+                    if let Some(w) = &self.window { w.request_redraw(); }
+                } else if let Some(_win) = win {
+                    // zoom как в v0.3a (курсор скорректирован на titlebar)
+                    let vw = self.renderer.as_ref().map(|r| r.viewer_size()).unwrap_or_default();
+                    let cursor_v = self.state.cursor - glam::Vec2::new(0.0, self.state.scale * theme::TITLEBAR_HEIGHT);
+                    let out = crate::input::on_wheel(&mut self.state.view, cursor_v, vw, lines);
                     if let Some(r) = &self.renderer {
                         if let Some(img) = r.image_size() {
-                            self.state.view.clamp_pan(win, img);
+                            self.state.view.clamp_pan(vw, img);
                         }
                     }
                     if out.redraw {
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
-                        }
+                        if let Some(w) = &self.window { w.request_redraw(); }
                     }
                 }
             }
@@ -510,19 +555,18 @@ impl ApplicationHandler<UserEvent> for App {
                 if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => {
-                            // клик по кнопкам titlebar имеет приоритет
-                            if let Some(r) = &self.renderer {
+                            // клики по регионам UI имеют приоритет над логикой фото
+                            let hit_info = self.renderer.as_ref().map(|r| {
                                 let win = r.surface_size();
-                                let l = layout::compute(win, self.state.scale, 1.0, false);
-                                match hit::hit(&l, win, self.state.cursor, self.state.scale) {
-                                    hit::Region::Close => {
-                                        event_loop.exit();
-                                        return;
-                                    }
+                                let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
+                                let region = hit::hit(&l, win, self.state.cursor, self.state.scale);
+                                (l, region)
+                            });
+                            if let Some((l, region)) = hit_info {
+                                match region {
+                                    hit::Region::Close => { event_loop.exit(); return; }
                                     hit::Region::Minimize => {
-                                        if let Some(w) = &self.window {
-                                            w.set_minimized(true);
-                                        }
+                                        if let Some(w) = &self.window { w.set_minimized(true); }
                                         return;
                                     }
                                     hit::Region::Maximize => {
@@ -530,6 +574,19 @@ impl ApplicationHandler<UserEvent> for App {
                                             let m = !w.is_maximized();
                                             w.set_maximized(m);
                                             self.state.ui.maximized = m;
+                                        }
+                                        return;
+                                    }
+                                    hit::Region::ActionFullscreen => { self.toggle_fullscreen(); return; }
+                                    hit::Region::ActionExif => { return; } // инертна (v0.4)
+                                    hit::Region::Divider => {
+                                        self.state.ui.bottom_visible = !self.state.ui.bottom_visible;
+                                        if let Some(w) = &self.window { w.request_redraw(); }
+                                        return;
+                                    }
+                                    hit::Region::Carousel | hit::Region::Thumbnail(_) => {
+                                        if let Some(idx) = hit::hit_thumbnail(l.carousel, self.state.ui.thumb_count, self.state.ui.scroll, self.state.scale, self.state.cursor) {
+                                            self.navigate_to(idx);
                                         }
                                         return;
                                     }
@@ -573,6 +630,19 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 use winit::keyboard::{Key, NamedKey};
                 if event.state.is_pressed() {
+                    // F / F11 / Esc — fullscreen, перехватываются первыми
+                    match event.logical_key.as_ref() {
+                        Key::Named(NamedKey::F11) => { self.toggle_fullscreen(); return; }
+                        Key::Named(NamedKey::Escape) => {
+                            if self.state.ui.fullscreen { self.toggle_fullscreen(); }
+                            return;
+                        }
+                        Key::Character(c) if c.eq_ignore_ascii_case("f") && !self.state.ctrl_down => {
+                            self.toggle_fullscreen();
+                            return;
+                        }
+                        _ => {}
+                    }
                     let nav = match event.logical_key.as_ref() {
                         Key::Named(NamedKey::ArrowRight) => Some(crate::input::NavKey::Next),
                         Key::Named(NamedKey::ArrowLeft) => Some(crate::input::NavKey::Prev),
