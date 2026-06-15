@@ -11,7 +11,7 @@
 
 | Фаза | Статус | Описание | Артефакты |
 |---|---|---|---|
-| **v0.1 — Viewer core** | 🟡 | Окно + wgpu, показ JPEG/PNG, zoom/pan, double-click fit/100%, навигация стрелками | [дизайн](docs/superpowers/specs/2026-06-15-lumina-v0.1-design.md) · [план](docs/superpowers/plans/2026-06-15-lumina-v0.1.md) |
+| **v0.1 — Viewer core** | 🟢 | Окно + wgpu, показ JPEG/PNG, zoom/pan, double-click fit/100%, навигация стрелками | [дизайн](docs/superpowers/specs/2026-06-15-lumina-v0.1-design.md) · [план](docs/superpowers/plans/2026-06-15-lumina-v0.1.md) |
 | **v0.2 — RAW и форматы** | ⚪ | rawler (RAF/NEF/ARW/CR2), HEIC через libheif-rs, embedded preview, async-декод полного RAW | — |
 | **v0.3 — UI** | ⚪ | Кастомный frameless titlebar, карусель миниатюр, divider toggle, мета-панель, кнопки fullscreen/EXIF | — |
 | **v0.4 — EXIF и трансформации** | ⚪ | Чтение EXIF (kamadak-exif), EXIF popup с редактированием, запись/XMP sidecar, повороты/отражения | — |
@@ -22,11 +22,11 @@
 
 Пункты из §12 спеки:
 
-- [ ] winit-окно + wgpu-контекст
-- [ ] Загрузка и показ JPEG/PNG
-- [ ] Zoom (колёсико) и pan (drag)
-- [ ] Double-click fit ↔ 100%
-- [ ] Навигация стрелками
+- [x] winit-окно + wgpu-контекст
+- [x] Загрузка и показ JPEG/PNG
+- [x] Zoom (колёсико) и pan (drag)
+- [x] Double-click fit ↔ 100%
+- [x] Навигация стрелками
 
 Прогресс по задачам плана отслеживается в `docs/superpowers/plans/2026-06-15-lumina-v0.1.md`.
 
