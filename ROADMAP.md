@@ -36,9 +36,17 @@
 - [x] HEIC через libheif-rs
 - [x] Embedded preview для мгновенного показа
 - [x] Async полное декодирование RAW (двухстадийный конвейер preview→full)
+- [x] Точный цвет RAW: для Fuji X-Trans — встроенный JPEG камеры (rawler демозаит X-Trans
+      некорректно → зеленца); для байеровских RAW — полноценный develop ([дизайн](docs/superpowers/specs/2026-06-15-lumina-raw-accurate-color-design.md) · [план](docs/superpowers/plans/2026-06-15-lumina-raw-accurate-color.md))
 
-Код и юнит-тесты готовы (30 тестов, RAW/HEIC-фикстуры — `#[ignore]`). Ручная GUI-приёмка
-на реальных RAW/HEIC — за пользователем (чек-лист в дизайне v0.2).
+Код и юнит-тесты готовы (29 тестов, RAW/HEIC-фикстуры — `#[ignore]`). Приёмка на реальных
+файлах пройдена: HEIC, Fuji RAF (естественный цвет), DNG открываются.
+
+**Известное ограничение — Lightroom HDR DNG (float JPEG XL).** Полноразмерные данные таких DNG
+(напр. 7728×5152) хранятся как float-JPEG-XL тайлами — rawler 0.7.2 это не декодирует
+(JPEG XL у него только для целочисленных данных). Показываем встроенное превью 1024px
+(цвет верный, мягко). Истинный full-res потребовал бы libraw + Adobe DNG SDK (тяжёлая
+нативная сборка на MSVC) — отложено. Детали разбора — в `docs/superpowers/specs/`.
 
 ## Установленное окружение
 
