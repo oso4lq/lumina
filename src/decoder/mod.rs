@@ -17,7 +17,11 @@ pub trait Decoder {
     where
         Self: Sized;
 
-    fn decode(&self, path: &Path) -> Result<DecodedImage>;
+    /// Быстрое встроенное превью. `None` — у формата превью нет (одна стадия).
+    fn decode_preview(&self, path: &Path) -> Result<Option<DecodedImage>>;
+
+    /// Полное декодирование (для RAW — базовый develop).
+    fn decode_full(&self, path: &Path) -> Result<DecodedImage>;
 }
 
 /// Расширение файла в нижнем регистре без точки, либо пустая строка.
@@ -49,13 +53,20 @@ mod tests {
     }
 
     #[test]
-    fn decodes_png_to_rgba() {
+    fn standard_has_no_preview() {
         let d = StandardDecoder;
-        let img = d.decode(&fixture("red_2x3.png")).unwrap();
+        // у обычного формата нет отдельного превью — одна стадия
+        assert!(d.decode_preview(Path::new("x.jpg")).unwrap().is_none());
+    }
+
+    #[test]
+    fn decodes_png_via_full() {
+        let d = StandardDecoder;
+        let img = d.decode_full(&fixture("red_2x3.png")).unwrap();
         assert_eq!(img.width, 2);
         assert_eq!(img.height, 3);
-        assert_eq!(img.rgba.len(), 2 * 3 * 4); // RGBA8
-        assert_eq!(&img.rgba[0..4], &[255, 0, 0, 255]); // первый пиксель красный
+        assert_eq!(img.rgba.len(), 2 * 3 * 4);
+        assert_eq!(&img.rgba[0..4], &[255, 0, 0, 255]);
     }
 
     #[test]

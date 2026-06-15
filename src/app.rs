@@ -81,7 +81,7 @@ impl App {
         }
         rayon::spawn(move || {
             let result = StandardDecoder
-                .decode(&path)
+                .decode_full(&path)
                 .map_err(|e| e.to_string());
             let _ = proxy.send_event(UserEvent::Decoded { generation, result });
         });

@@ -11,15 +11,15 @@ impl Decoder for StandardDecoder {
         EXTS.contains(&ext)
     }
 
-    fn decode(&self, path: &Path) -> Result<DecodedImage> {
+    fn decode_preview(&self, _path: &Path) -> Result<Option<DecodedImage>> {
+        Ok(None)
+    }
+
+    fn decode_full(&self, path: &Path) -> Result<DecodedImage> {
         let img = image::open(path)
             .map_err(|e| LuminaError::Decode(path.to_path_buf(), e))?;
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();
-        Ok(DecodedImage {
-            rgba: rgba.into_raw(),
-            width,
-            height,
-        })
+        Ok(DecodedImage { rgba: rgba.into_raw(), width, height })
     }
 }
