@@ -1,6 +1,7 @@
 mod catalog;
 mod decoder;
 mod error;
+mod renderer;
 mod view;
 
 fn main() {
