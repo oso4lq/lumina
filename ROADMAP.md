@@ -34,7 +34,13 @@
 
 - 🟢 Rust 1.96.0 stable (`x86_64-pc-windows-msvc`)
 - 🟢 MSVC Build Tools 14.51 + Windows SDK 10.0.26100
-- 🟢 Git
-- ⚪ LLVM/Clang (`libclang`) — понадобится в v0.2 (HEIC, libraw)
-- ⚪ vcpkg + libheif + CMake — v0.2
+- 🟢 Git, winget
+- 🟢 LLVM/Clang 22.1.7 (`libclang`) — bindgen для libheif-rs
+- 🟢 CMake 4.3.3
+- 🟢 vcpkg + libheif 1.23.0 (libde265/x265) — HEIC. Линковка проверена (`cargo run --bin smoke_libheif`)
 - ⚪ ExifTool — v0.4 (запись EXIF)
+
+> **Окружение сборки/запуска v0.2** (user-env уже выставлены через `setx`):
+> `VCPKG_ROOT=~/vcpkg`, `LIBCLANG_PATH=C:\Program Files\LLVM\bin`, `VCPKGRS_DYNAMIC=1`.
+> Для запуска приложения каталог `~/vcpkg/installed/x64-windows/bin` (heif.dll/libde265.dll)
+> должен быть в `PATH`, либо DLL копируются рядом с exe.

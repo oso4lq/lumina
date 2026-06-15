@@ -13,6 +13,8 @@ rayon      = "1.10"
 bytemuck   = { version = "1.16", features = ["derive"] }
 glam       = "0.28"
 natord     = "1.0"
+rawler     = "0.7"               # pure-Rust RAW decoder (LGPL-2.1)
+libheif-rs = "2.7"               # HEIC/HEIF через libheif (FFI)
 rfd        = "0.14"
 thiserror  = "1"
 log        = "0.4"
