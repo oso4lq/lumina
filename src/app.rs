@@ -27,6 +27,7 @@ pub struct AppState {
     pub dragging: bool,
     pub last_cursor: glam::Vec2,
     pub last_click: Option<(std::time::Instant, glam::Vec2)>,
+    pub ctrl_down: bool,
 }
 
 impl AppState {
@@ -40,6 +41,7 @@ impl AppState {
             dragging: false,
             last_cursor: glam::Vec2::ZERO,
             last_click: None,
+            ctrl_down: false,
         }
     }
 }
@@ -118,6 +120,24 @@ impl App {
             self.state.view.set_pan(glam::Vec2::ZERO);
             self.state.view.animate_zoom_to(fit);
         }
+        if let Some(w) = &self.window { w.request_redraw(); }
+    }
+
+    /// Ctrl+0: вписать в окно (fit) с анимацией.
+    fn set_fit_view(&mut self) {
+        let Some(r) = &self.renderer else { return };
+        let Some(img) = r.image_size() else { return };
+        let fit = crate::view::fit_zoom(r.surface_size(), img);
+        self.state.view.set_fit(true);
+        self.state.view.set_pan(glam::Vec2::ZERO);
+        self.state.view.animate_zoom_to(fit);
+        if let Some(w) = &self.window { w.request_redraw(); }
+    }
+
+    /// Ctrl+1: 100% (1:1) с анимацией.
+    fn set_actual_size(&mut self) {
+        self.state.view.set_fit(false);
+        self.state.view.animate_zoom_to(1.0);
         if let Some(w) = &self.window { w.request_redraw(); }
     }
 
@@ -292,8 +312,19 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(n) = crate::input::on_nav_key(k).navigate {
                             self.navigate(n);
                         }
+                    } else if self.state.ctrl_down {
+                        if let Key::Character(c) = event.logical_key.as_ref() {
+                            match c {
+                                "0" => self.set_fit_view(),
+                                "1" => self.set_actual_size(),
+                                _ => {}
+                            }
+                        }
                     }
                 }
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                self.state.ctrl_down = mods.state().control_key();
             }
             _ => {}
         }
