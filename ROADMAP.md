@@ -12,7 +12,7 @@
 | Фаза | Статус | Описание | Артефакты |
 |---|---|---|---|
 | **v0.1 — Viewer core** | 🟢 | Окно + wgpu, показ JPEG/PNG, zoom/pan, double-click fit/100%, навигация стрелками | [дизайн](docs/superpowers/specs/2026-06-15-lumina-v0.1-design.md) · [план](docs/superpowers/plans/2026-06-15-lumina-v0.1.md) |
-| **v0.2 — RAW и форматы** | ⚪ | rawler (RAF/NEF/ARW/CR2), HEIC через libheif-rs, embedded preview, async-декод полного RAW | — |
+| **v0.2 — RAW и форматы** | 🟢 | rawler (RAF/NEF/ARW/CR2), HEIC через libheif-rs, embedded preview, async-декод полного RAW | [дизайн](docs/superpowers/specs/2026-06-15-lumina-v0.2-design.md) · [план](docs/superpowers/plans/2026-06-15-lumina-v0.2.md) |
 | **v0.3 — UI** | ⚪ | Кастомный frameless titlebar, карусель миниатюр, divider toggle, мета-панель, кнопки fullscreen/EXIF | — |
 | **v0.4 — EXIF и трансформации** | ⚪ | Чтение EXIF (kamadak-exif), EXIF popup с редактированием, запись/XMP sidecar, повороты/отражения | — |
 | **v0.5 — Полировка** | ⚪ | Кэш миниатюр (sled), префетч ±2, folder watcher (notify), свайп трекпадом, installer + реестр | — |
@@ -29,6 +29,16 @@
 - [x] Навигация стрелками
 
 Прогресс по задачам плана отслеживается в `docs/superpowers/plans/2026-06-15-lumina-v0.1.md`.
+
+## Прогресс v0.2 (детально)
+
+- [x] rawler интеграция (RAF, NEF, ARW, CR2, …)
+- [x] HEIC через libheif-rs
+- [x] Embedded preview для мгновенного показа
+- [x] Async полное декодирование RAW (двухстадийный конвейер preview→full)
+
+Код и юнит-тесты готовы (30 тестов, RAW/HEIC-фикстуры — `#[ignore]`). Ручная GUI-приёмка
+на реальных RAW/HEIC — за пользователем (чек-лист в дизайне v0.2).
 
 ## Установленное окружение
 
