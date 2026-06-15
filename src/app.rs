@@ -285,7 +285,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.state.last_frame = now;
                 self.state.view.tick(dt);
                 if let Some(r) = &mut self.renderer {
-                    if let Err(e) = r.render(&self.state.view) {
+                    // временный мост Task 8: команды UI подключаются в Task 9
+                    if let Err(e) = r.render(&self.state.view, &[]) {
                         log::warn!("render: {e}");
                     }
                 }

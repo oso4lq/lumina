@@ -1,5 +1,3 @@
-use super::context::GpuContext;
-use crate::error::{LuminaError, Result};
 use crate::view::ViewTransform;
 use glam::Vec2;
 use wgpu::util::DeviceExt;
@@ -160,52 +158,30 @@ impl BlitPipeline {
         }));
     }
 
-    pub fn render(
-        &mut self,
-        ctx: &GpuContext,
+    /// Нарисовать фото в открытый pass. `viewer` — (x, y, w, h) физ. px.
+    /// Матрица вида считается относительно размера viewer-региона.
+    pub fn draw<'a>(
+        &'a mut self,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass<'a>,
         view: &ViewTransform,
         image_size: Option<Vec2>,
-    ) -> Result<()> {
-        let frame = ctx
-            .surface
-            .get_current_texture()
-            .map_err(|e| LuminaError::Gpu(format!("get_current_texture: {e}")))?;
-        let target = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Обновить uniform-матрицу
+        viewer: (f32, f32, f32, f32),
+    ) {
         if let Some(img) = image_size {
-            let win = Vec2::new(ctx.config.width as f32, ctx.config.height as f32);
+            let win = Vec2::new(viewer.2, viewer.3);
             let m = view.matrix(win, img);
-            ctx.queue
-                .write_buffer(&self.uniform, 0, bytemuck::cast_slice(&m.to_cols_array()));
+            queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&m.to_cols_array()));
         }
+        if let Some(bg) = &self.bind_group {
+            pass.set_viewport(viewer.0, viewer.1, viewer.2, viewer.3, 0.0, 1.0);
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, bg, &[]);
+            pass.draw(0..4, 0..1);
+        }
+    }
 
-        let mut encoder = ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("blit-pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.bg_color),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            if let Some(bg) = &self.bind_group {
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, bg, &[]);
-                pass.draw(0..4, 0..1); // triangle-strip из 4 вершин
-            }
-        }
-        ctx.queue.submit(Some(encoder.finish()));
-        frame.present();
-        Ok(())
+    pub fn bg_color(&self) -> wgpu::Color {
+        self.bg_color
     }
 }
