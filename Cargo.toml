@@ -19,6 +19,17 @@ rfd        = "0.14"
 thiserror  = "1"
 log        = "0.4"
 env_logger = "0.11"
+glyphon    = "0.6"               # рендер текста поверх wgpu (cosmic-text)
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_UI_Controls",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+] }
 
 [[bin]]
 name = "make_fixtures"

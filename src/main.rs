@@ -3,7 +3,9 @@ mod catalog;
 mod decoder;
 mod error;
 mod input;
+mod platform;
 mod renderer;
+mod ui;
 mod view;
 
 use app::{App, UserEvent};
