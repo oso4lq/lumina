@@ -31,7 +31,11 @@ impl TextLayer {
         queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
     ) -> Self {
-        let font_system = FontSystem::new();
+        let mut font_system = FontSystem::new();
+        // Встроенный шрифт иконок действий (Tabler Icons, MIT).
+        font_system
+            .db_mut()
+            .load_font_data(include_bytes!("../../assets/fonts/tabler-icons.ttf").to_vec());
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
         let viewport = Viewport::new(device, &cache);
@@ -82,9 +86,8 @@ impl TextLayer {
                     buf.set_size(&mut self.font_system, Some(rect.w), Some(rect.h));
                     let s = glyph.to_string();
                     let family = match font {
-                        // Tabler подключим в Task 7; пока оба → Segoe MDL2, чтобы собиралось.
                         IconFont::WindowMdl2 => crate::ui::scene::ICON_FONT_FAMILY,
-                        IconFont::Tabler => crate::ui::scene::ICON_FONT_FAMILY,
+                        IconFont::Tabler => crate::ui::scene::TABLER_FONT_FAMILY,
                     };
                     buf.set_text(
                         &mut self.font_system,
