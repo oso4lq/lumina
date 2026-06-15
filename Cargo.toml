@@ -1,0 +1,24 @@
+[package]
+name = "lumina"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winit      = "0.30"
+wgpu       = "22"
+image      = "0.25"
+pollster   = "0.3"
+rayon      = "1.10"
+bytemuck   = { version = "1.16", features = ["derive"] }
+glam       = "0.28"
+natord     = "1.0"
+rfd        = "0.14"
+thiserror  = "1"
+log        = "0.4"
+env_logger = "0.11"
+
+[profile.dev]
+opt-level = 1          # image-декод в debug иначе мучительно медленный
+
+[profile.dev.package."*"]
+opt-level = 3          # зависимости (wgpu/image) всегда оптимизированы
