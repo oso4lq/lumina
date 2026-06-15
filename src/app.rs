@@ -1,7 +1,8 @@
 use crate::catalog::FolderCatalog;
-use crate::decoder::DecodedImage;
+use crate::decoder::{Decoder, DecodedImage, RawDecoder};
 use crate::renderer::Renderer;
-use crate::ui::scene::{self, UiState};
+use crate::thumbnail::ThumbnailStore;
+use crate::ui::scene::{self, FileMeta, UiState};
 use crate::ui::theme::{self, ThemePalette};
 use crate::ui::{hit, layout};
 use crate::view::ViewTransform;
@@ -27,6 +28,13 @@ pub enum UserEvent {
         stage: Stage,
         result: std::result::Result<DecodedImage, String>,
     },
+    Thumbnail {
+        generation: u64,
+        index: usize,
+        rgba: Vec<u8>,
+        w: u32,
+        h: u32,
+    },
 }
 
 pub struct AppState {
@@ -43,6 +51,9 @@ pub struct AppState {
     pub ui: UiState,
     pub theme: ThemePalette,
     pub scale: f32,
+    pub thumbs: ThumbnailStore,
+    pub raw_flags: Vec<bool>,      // для бейджей: RAW-файл по индексу каталога
+    pub badge_labels: Vec<String>, // текст бейджа (расширение в верхнем регистре)
 }
 
 impl AppState {
@@ -61,6 +72,9 @@ impl AppState {
             ui: UiState::new(),
             theme: ThemePalette::dark(),
             scale: 1.0,
+            thumbs: ThumbnailStore::new(256),
+            raw_flags: Vec::new(),
+            badge_labels: Vec::new(),
         }
     }
 }
@@ -98,6 +112,21 @@ impl App {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             self.state.ui.title = format!("{name} · Lumina");
             w.request_redraw();
+        }
+        // Списки каталога для карусели и активный индекс
+        if let Some(cat) = &self.state.catalog {
+            let files = cat.files();
+            let n = files.len();
+            self.state.ui.thumb_count = n;
+            self.state.ui.active_index = cat.current_index();
+            self.state.raw_flags = files
+                .iter()
+                .map(|p| RawDecoder::supports(&crate::decoder::ext_lower(p)))
+                .collect();
+            self.state.badge_labels = files
+                .iter()
+                .map(|p| p.extension().and_then(|s| s.to_str()).map(|s| s.to_uppercase()).unwrap_or_default())
+                .collect();
         }
         let ext = crate::decoder::ext_lower(&path);
         rayon::spawn(move || {
@@ -193,11 +222,60 @@ impl App {
                 self.state.catalog = Some(cat);
                 self.state.view = ViewTransform::new();
                 self.state.inited_generation = None;
+                self.state.thumbs.reset();
+                self.state.ui.scroll = 0.0;
                 self.load_current();
             }
             Err(e) => log::warn!("не удалось открыть папку для {path:?}: {e}"),
         }
     }
+
+    /// Запросить декод миниатюр для индексов окна, которых ещё нет.
+    fn request_thumbnails(&mut self, window: Vec<usize>) {
+        let Some(catalog) = &self.state.catalog else { return };
+        let pending = self.state.thumbs.take_pending(&window);
+        if pending.is_empty() {
+            return;
+        }
+        let generation = self.state.thumbs.generation;
+        let scale = self.state.scale;
+        let tw = (crate::ui::theme::THUMB_W * scale).round() as u32;
+        let th = (crate::ui::theme::THUMB_H * scale).round() as u32;
+        for index in pending {
+            let Some(path) = catalog.files().get(index) else { continue };
+            let path = path.to_path_buf();
+            let proxy = self.proxy.clone();
+            let ext = crate::decoder::ext_lower(&path);
+            rayon::spawn(move || {
+                let Some(decoder) = crate::decoder::decoder_for(&ext) else { return };
+                // источник: встроенное превью если есть, иначе полный декод
+                let decoded = match decoder.decode_preview(&path) {
+                    Ok(Some(img)) => Some(img),
+                    _ => decoder.decode_full(&path).ok(),
+                };
+                let Some(img) = decoded else {
+                    let _ = proxy.send_event(UserEvent::Thumbnail { generation, index, rgba: Vec::new(), w: 0, h: 0 });
+                    return;
+                };
+                let (rgba, w, h) = crate::app::make_thumb(&img.rgba, img.width, img.height, tw, th);
+                let _ = proxy.send_event(UserEvent::Thumbnail { generation, index, rgba, w, h });
+            });
+        }
+    }
+}
+
+/// Cover-кроп исходного RGBA и ресайз до tw×th. Возвращает (rgba, tw, th).
+pub fn make_thumb(src: &[u8], sw: u32, sh: u32, tw: u32, th: u32) -> (Vec<u8>, u32, u32) {
+    use image::{imageops, RgbaImage};
+    let tw = tw.max(1);
+    let th = th.max(1);
+    let Some(buf) = RgbaImage::from_raw(sw, sh, src.to_vec()) else {
+        return (vec![0u8; (tw * th * 4) as usize], tw, th);
+    };
+    let (cx, cy, cw, ch) = crate::thumbnail::cover_crop(sw, sh, tw, th);
+    let cropped = imageops::crop_imm(&buf, cx, cy, cw, ch).to_image();
+    let resized = imageops::resize(&cropped, tw, th, imageops::FilterType::Triangle);
+    (resized.into_raw(), tw, th)
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -270,6 +348,22 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.state.view.rescale_for_new_image(win, old_img, new_img);
                             }
                         }
+                        // мета-панель текущего фото
+                        if let Some(cat) = &self.state.catalog {
+                            let path = cat.current_path();
+                            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_uppercase();
+                            let is_raw = RawDecoder::supports(&crate::decoder::ext_lower(path));
+                            let format_label = if is_raw { format!("{ext} · RAW") } else { ext };
+                            let mp = (img.width as f32 * img.height as f32) / 1_000_000.0;
+                            self.state.ui.meta = Some(FileMeta {
+                                format_label,
+                                megapixels: mp,
+                                width: img.width,
+                                height: img.height,
+                                bytes,
+                            });
+                        }
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
@@ -279,6 +373,26 @@ impl ApplicationHandler<UserEvent> for App {
                         log::warn!("декодирование ({}) не удалось: {e}",
                             if stage == Stage::Preview { "preview" } else { "full" });
                     }
+                }
+            }
+            UserEvent::Thumbnail { generation, index, rgba, w, h } => {
+                if generation != self.state.thumbs.generation {
+                    return; // устаревшее поколение (сменилась папка)
+                }
+                let ok = !rgba.is_empty() && w > 0 && h > 0;
+                if ok {
+                    if let Some(r) = &mut self.renderer {
+                        r.set_thumbnail(index, &rgba, w, h);
+                    }
+                }
+                let freed = self.state.thumbs.mark_ready(index, ok);
+                if let Some(r) = &mut self.renderer {
+                    for i in freed {
+                        r.drop_thumbnail(i);
+                    }
+                }
+                if let Some(wnd) = &self.window {
+                    wnd.request_redraw();
                 }
             }
         }
@@ -313,19 +427,33 @@ impl ApplicationHandler<UserEvent> for App {
                 let dt = (now - self.state.last_frame).as_secs_f32();
                 self.state.last_frame = now;
                 self.state.view.tick(dt);
-                if let Some(r) = &mut self.renderer {
+                // анимация toggle bottom bar (~200 мс)
+                let target = if self.state.ui.bottom_visible { 1.0 } else { 0.0 };
+                let f = self.state.ui.bottom_factor;
+                let animating = (f - target).abs() > 0.001;
+                self.state.ui.bottom_factor = if animating { f + (target - f) * (dt / 0.2).min(1.0) } else { target };
+
+                let prep = self.renderer.as_ref().map(|r| {
                     let win = r.surface_size();
-                    let l = layout::compute(win, self.state.scale, 1.0, false);
-                    // временный мост Task 4: миниатюры/raw-флаги подключаются в Task 9
-                    let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale, &[], &[]);
-                    if let Err(e) = r.render(&self.state.view, &cmds, &[]) {
-                        log::warn!("render: {e}");
+                    let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
+                    let thumb_rects = layout::carousel_thumb_rects(l.carousel, self.state.ui.thumb_count, self.state.ui.scroll, self.state.scale);
+                    (l, thumb_rects)
+                });
+                if let Some((l, thumb_rects)) = prep {
+                    let window: Vec<usize> = thumb_rects.iter().map(|(i, _)| *i).collect();
+                    self.request_thumbnails(window);
+                    let bottom_chrome = if self.state.ui.fullscreen { 0.0 } else { l.divider.h + l.bottom_bar.h };
+                    let tb = if self.state.ui.fullscreen { 0.0 } else { theme::TITLEBAR_HEIGHT * self.state.scale };
+                    let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale, &thumb_rects, &self.state.raw_flags);
+                    if let Some(r) = &mut self.renderer {
+                        r.set_bottom_chrome_height(bottom_chrome);
+                        r.set_titlebar_height(tb);
+                        let ready: Vec<(usize, crate::ui::layout::Rect)> = thumb_rects.iter().filter(|(i, _)| r.has_thumbnail(*i)).copied().collect();
+                        if let Err(e) = r.render(&self.state.view, &cmds, &ready) { log::warn!("render: {e}"); }
                     }
                 }
-                if self.state.view.is_animating() {
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
+                if self.state.view.is_animating() || animating {
+                    if let Some(w) = &self.window { w.request_redraw(); }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
