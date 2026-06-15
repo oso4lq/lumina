@@ -2,6 +2,7 @@ use super::{Decoder, DecodedImage};
 use crate::error::{LuminaError, Result};
 use rawler::get_decoder;
 use rawler::imgop::develop::RawDevelop;
+use rawler::rawimage::RawPhotometricInterpretation;
 use rawler::rawsource::RawSource;
 use std::path::Path;
 
@@ -13,6 +14,13 @@ const EXTS: &[&str] = &[
 /// (X-Trans-данные проходят через байеровский демозаик → неверный цвет).
 fn is_non_bayer_cfa(width: usize, height: usize) -> bool {
     width > 2 || height > 2
+}
+
+/// `image::DynamicImage` → наш плотный RGBA8. rawler и проект используют одну версию `image`.
+fn dynamic_to_decoded(dynimg: image::DynamicImage) -> DecodedImage {
+    let rgba = dynimg.to_rgba8();
+    let (width, height) = (rgba.width(), rgba.height());
+    DecodedImage { rgba: rgba.into_raw(), width, height }
 }
 
 pub struct RawDecoder;
@@ -27,14 +35,12 @@ impl Decoder for RawDecoder {
             .map_err(|e| LuminaError::Raw(path.to_path_buf(), e.to_string()))?;
         let decoder = get_decoder(&source)
             .map_err(|e| LuminaError::Raw(path.to_path_buf(), e.to_string()))?;
-        let preview = decoder
-            .preview_image(&source, &Default::default())
+        // Встроенный JPEG камеры: мгновенно и цветоточно (film simulation камеры).
+        // None — у формата нет встроенного полного изображения, стадия Preview пропускается.
+        let embedded = decoder
+            .full_image(&source, &Default::default())
             .map_err(|e| LuminaError::Raw(path.to_path_buf(), e.to_string()))?;
-        Ok(preview.map(|dynimg| {
-            let rgba = dynimg.to_rgba8();
-            let (width, height) = (rgba.width(), rgba.height());
-            DecodedImage { rgba: rgba.into_raw(), width, height }
-        }))
+        Ok(embedded.map(dynamic_to_decoded))
     }
 
     fn decode_full(&self, path: &Path) -> Result<DecodedImage> {
@@ -42,6 +48,33 @@ impl Decoder for RawDecoder {
             .map_err(|e| LuminaError::Raw(path.to_path_buf(), e.to_string()))?;
         let decoder = get_decoder(&source)
             .map_err(|e| LuminaError::Raw(path.to_path_buf(), e.to_string()))?;
+
+        // Дешёвый зонд метаданных: dummy=true пропускает распаковку пикселей,
+        // но заполняет CFA. Узнаём тип сенсора без тяжёлого декода.
+        let probe = decoder
+            .raw_image(&source, &Default::default(), true)
+            .map_err(|e| LuminaError::Raw(path.to_path_buf(), e.to_string()))?;
+        let non_bayer = match &probe.photometric {
+            RawPhotometricInterpretation::Cfa(cfg) => {
+                is_non_bayer_cfa(cfg.cfa.width, cfg.cfa.height)
+            }
+            _ => false,
+        };
+
+        if non_bayer {
+            // X-Trans и пр.: develop rawler даёт неверный цвет → встроенный JPEG камеры.
+            match decoder
+                .full_image(&source, &Default::default())
+                .map_err(|e| LuminaError::Raw(path.to_path_buf(), e.to_string()))?
+            {
+                Some(dynimg) => return Ok(dynamic_to_decoded(dynimg)),
+                None => log::warn!(
+                    "{path:?}: non-Bayer CFA без встроенного JPEG — fallback на develop (возможна зеленца)"
+                ),
+            }
+        }
+
+        // Байер (или fallback): полноценный develop.
         let raw = decoder
             .raw_image(&source, &Default::default(), false)
             .map_err(|e| LuminaError::Raw(path.to_path_buf(), e.to_string()))?;
@@ -51,9 +84,7 @@ impl Decoder for RawDecoder {
         let dynimg = intermediate
             .to_dynamic_image()
             .ok_or_else(|| LuminaError::Raw(path.to_path_buf(), "develop вернул None".into()))?;
-        let rgba = dynimg.to_rgba8();
-        let (width, height) = (rgba.width(), rgba.height());
-        Ok(DecodedImage { rgba: rgba.into_raw(), width, height })
+        Ok(dynamic_to_decoded(dynimg))
     }
 }
 
@@ -81,6 +112,8 @@ mod tests {
         assert_eq!(img.rgba.len(), (img.width * img.height * 4) as usize);
     }
 
+    // Требует реальный образец tests/fixtures/sample.raf — запускать вручную.
+    // Превью теперь = встроенный JPEG камеры (Decoder::full_image), а не preview_image.
     #[test]
     #[ignore]
     fn raw_preview_sample() {
