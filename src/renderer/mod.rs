@@ -1,5 +1,6 @@
 mod context;
 mod pipeline;
+mod ui_pipeline;
 
 use crate::error::Result;
 use crate::view::ViewTransform;
