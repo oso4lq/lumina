@@ -5,7 +5,10 @@ mod standard;
 pub use standard::StandardDecoder;
 
 mod heic;
+pub use heic::HeicDecoder;
+
 mod raw;
+pub use raw::RawDecoder;
 
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
@@ -33,6 +36,24 @@ pub fn ext_lower(path: &Path) -> String {
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
         .unwrap_or_default()
+}
+
+/// Поддерживается ли расширение хоть одним декодером.
+pub fn supported(ext: &str) -> bool {
+    StandardDecoder::supports(ext) || RawDecoder::supports(ext) || HeicDecoder::supports(ext)
+}
+
+/// Подобрать декодер по расширению. Приоритет: Raw → Heic → Standard.
+pub fn decoder_for(ext: &str) -> Option<Box<dyn Decoder + Send>> {
+    if RawDecoder::supports(ext) {
+        Some(Box::new(RawDecoder))
+    } else if HeicDecoder::supports(ext) {
+        Some(Box::new(HeicDecoder))
+    } else if StandardDecoder::supports(ext) {
+        Some(Box::new(StandardDecoder))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -76,5 +97,22 @@ mod tests {
     fn ext_lower_works() {
         assert_eq!(ext_lower(Path::new("A.JPG")), "jpg");
         assert_eq!(ext_lower(Path::new("noext")), "");
+    }
+
+    #[test]
+    fn router_supported_covers_all_families() {
+        assert!(supported("jpg"));   // standard
+        assert!(supported("raf"));   // raw (fuji)
+        assert!(supported("nef"));   // raw (nikon)
+        assert!(supported("heic"));  // heic
+        assert!(!supported("txt"));
+    }
+
+    #[test]
+    fn router_picks_decoder_or_none() {
+        assert!(decoder_for("jpg").is_some());
+        assert!(decoder_for("raf").is_some());
+        assert!(decoder_for("heic").is_some());
+        assert!(decoder_for("txt").is_none());
     }
 }

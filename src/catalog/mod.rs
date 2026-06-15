@@ -1,4 +1,4 @@
-use crate::decoder::{ext_lower, Decoder, StandardDecoder};
+use crate::decoder::{ext_lower, supported};
 use std::path::{Path, PathBuf};
 
 pub struct FolderCatalog {
@@ -12,7 +12,7 @@ impl FolderCatalog {
         let dir = opened.parent().unwrap_or_else(|| Path::new("."));
         let files: Vec<PathBuf> = std::fs::read_dir(dir)?
             .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.is_file() && StandardDecoder::supports(&ext_lower(p)))
+            .filter(|p| p.is_file() && supported(&ext_lower(p)))
             .collect();
         Ok(Self::sort_and_locate(files, opened))
     }
@@ -22,7 +22,7 @@ impl FolderCatalog {
     pub fn from_files_for_test(files: Vec<PathBuf>, opened: &Path) -> Self {
         let files: Vec<PathBuf> = files
             .into_iter()
-            .filter(|p| StandardDecoder::supports(&ext_lower(p)))
+            .filter(|p| supported(&ext_lower(p)))
             .collect();
         Self::sort_and_locate(files, opened)
     }
