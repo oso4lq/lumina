@@ -23,6 +23,11 @@ pub enum Region {
     Maximize,
     Close,
     Resize(Edge),
+    Divider,
+    Carousel,
+    Thumbnail(usize),
+    ActionFullscreen,
+    ActionExif,
 }
 
 /// Ширина зоны захвата для ресайза у краёв окна (логические px).
@@ -62,7 +67,35 @@ pub fn hit(layout: &UiLayout, win: Vec2, cursor: Vec2, scale: f32) -> Region {
     if layout.titlebar.contains(cursor) {
         return Region::Caption;
     }
+    if layout.btn_fullscreen.contains(cursor) {
+        return Region::ActionFullscreen;
+    }
+    if layout.btn_exif.contains(cursor) {
+        return Region::ActionExif;
+    }
+    if layout.divider.contains(cursor) {
+        return Region::Divider;
+    }
+    if layout.carousel.contains(cursor) {
+        return Region::Carousel;
+    }
     Region::None
+}
+
+/// Индекс миниатюры под курсором, если попал по одной из видимых.
+pub fn hit_thumbnail(
+    carousel: crate::ui::layout::Rect,
+    count: usize,
+    scroll: f32,
+    scale: f32,
+    cursor: Vec2,
+) -> Option<usize> {
+    for (i, r) in crate::ui::layout::carousel_thumb_rects(carousel, count, scroll, scale) {
+        if r.contains(cursor) {
+            return Some(i);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -117,5 +150,51 @@ mod tests {
         let win = Vec2::new(1280.0, 800.0);
         let r = hit(&layout(), win, Vec2::new(1279.0, 1.0), 1.0);
         assert_eq!(r, Region::Resize(Edge::TopRight));
+    }
+
+    #[test]
+    fn fullscreen_button_region() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        // центр кнопки fullscreen
+        let c = Vec2::new(l.btn_fullscreen.x + 19.0, l.btn_fullscreen.y + 42.0);
+        assert_eq!(hit(&l, Vec2::new(1280.0, 800.0), c, 1.0), Region::ActionFullscreen);
+    }
+
+    #[test]
+    fn exif_button_region() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        let c = Vec2::new(l.btn_exif.x + 19.0, l.btn_exif.y + 42.0);
+        assert_eq!(hit(&l, Vec2::new(1280.0, 800.0), c, 1.0), Region::ActionExif);
+    }
+
+    #[test]
+    fn divider_region() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        let c = Vec2::new(400.0, l.divider.y + 11.0);
+        assert_eq!(hit(&l, Vec2::new(1280.0, 800.0), c, 1.0), Region::Divider);
+    }
+
+    #[test]
+    fn carousel_region() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        let c = Vec2::new(l.carousel.x + 200.0, l.carousel.y + 42.0);
+        assert_eq!(hit(&l, Vec2::new(1280.0, 800.0), c, 1.0), Region::Carousel);
+    }
+
+    #[test]
+    fn thumbnail_hit_by_index() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        // центр первой миниатюры
+        let first = crate::ui::layout::carousel_thumb_rects(l.carousel, 100, 0.0, 1.0)[0].1;
+        let c = Vec2::new(first.x + 31.0, first.y + 32.0);
+        assert_eq!(hit_thumbnail(l.carousel, 100, 0.0, 1.0, c), Some(0));
+        // мимо карусели
+        assert_eq!(hit_thumbnail(l.carousel, 100, 0.0, 1.0, Vec2::new(0.0, 0.0)), None);
+    }
+
+    #[test]
+    fn viewer_still_none() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        assert_eq!(hit(&l, Vec2::new(1280.0, 800.0), Vec2::new(640.0, 300.0), 1.0), Region::None);
     }
 }
