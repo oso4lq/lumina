@@ -1,5 +1,6 @@
 mod context;
 mod pipeline;
+mod text;
 mod ui_pipeline;
 
 use crate::error::Result;
