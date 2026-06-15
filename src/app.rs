@@ -1,5 +1,5 @@
 use crate::catalog::FolderCatalog;
-use crate::decoder::{DecodedImage, Decoder, StandardDecoder};
+use crate::decoder::{DecodedImage, Decoder};
 use crate::renderer::Renderer;
 use crate::view::ViewTransform;
 use std::path::PathBuf;
@@ -10,10 +10,18 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+/// Стадия декодирования.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Stage {
+    Preview,
+    Full,
+}
+
 /// События, приходящие в event loop извне (из rayon).
 pub enum UserEvent {
     Decoded {
         generation: u64,
+        stage: Stage,
         result: std::result::Result<DecodedImage, String>,
     },
 }
@@ -22,6 +30,7 @@ pub struct AppState {
     pub catalog: Option<FolderCatalog>,
     pub view: ViewTransform,
     pub generation: u64,
+    pub inited_generation: Option<u64>,
     pub last_frame: Instant,
     pub cursor: glam::Vec2,
     pub dragging: bool,
@@ -36,6 +45,7 @@ impl AppState {
             catalog: None,
             view: ViewTransform::new(),
             generation: 0,
+            inited_generation: None,
             last_frame: Instant::now(),
             cursor: glam::Vec2::ZERO,
             dragging: false,
@@ -79,11 +89,36 @@ impl App {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             w.set_title(&format!("{name} — Lumina"));
         }
+        let ext = crate::decoder::ext_lower(&path);
         rayon::spawn(move || {
-            let result = StandardDecoder
-                .decode_full(&path)
-                .map_err(|e| e.to_string());
-            let _ = proxy.send_event(UserEvent::Decoded { generation, result });
+            let Some(decoder) = crate::decoder::decoder_for(&ext) else {
+                // нет декодера → шлём ошибку как стадию Full
+                let _ = proxy.send_event(UserEvent::Decoded {
+                    generation,
+                    stage: Stage::Full,
+                    result: Err(format!("нет декодера для .{ext}")),
+                });
+                return;
+            };
+            // Стадия Preview (если есть)
+            match decoder.decode_preview(&path) {
+                Ok(Some(img)) => {
+                    let _ = proxy.send_event(UserEvent::Decoded {
+                        generation,
+                        stage: Stage::Preview,
+                        result: Ok(img),
+                    });
+                }
+                Ok(None) => {}
+                Err(e) => log::warn!("превью {path:?}: {e}"),
+            }
+            // Стадия Full
+            let result = decoder.decode_full(&path).map_err(|e| e.to_string());
+            let _ = proxy.send_event(UserEvent::Decoded {
+                generation,
+                stage: Stage::Full,
+                result,
+            });
         });
     }
 
@@ -147,6 +182,7 @@ impl App {
             Ok(cat) => {
                 self.state.catalog = Some(cat);
                 self.state.view = ViewTransform::new();
+                self.state.inited_generation = None;
                 self.load_current();
             }
             Err(e) => log::warn!("не удалось открыть папку для {path:?}: {e}"),
@@ -181,27 +217,39 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::Decoded { generation, result } => {
+            UserEvent::Decoded { generation, stage, result } => {
                 if generation != self.state.generation {
                     return; // устаревший результат — игнор
                 }
                 match result {
                     Ok(img) => {
+                        let new_img = glam::Vec2::new(img.width as f32, img.height as f32);
                         if let Some(r) = &mut self.renderer {
+                            let old_img = r.image_size();
                             r.upload_texture(&img.rgba, img.width, img.height);
-                            // вписать в окно
                             let win = r.surface_size();
-                            let z = crate::view::fit_zoom(win, glam::Vec2::new(img.width as f32, img.height as f32));
-                            self.state.view.set_min_zoom(z); // fit — нижняя граница зума
-                            self.state.view.set_zoom_immediate(z);
-                            self.state.view.set_fit(true);
-                            self.state.view.set_pan(glam::Vec2::ZERO);
+                            if self.state.inited_generation != Some(generation) {
+                                // первый кадр этой генерации → инициализация вида (как v0.1)
+                                let z = crate::view::fit_zoom(win, new_img);
+                                self.state.view.set_min_zoom(z);
+                                self.state.view.set_zoom_immediate(z);
+                                self.state.view.set_fit(true);
+                                self.state.view.set_pan(glam::Vec2::ZERO);
+                                self.state.inited_generation = Some(generation);
+                            } else if let Some(old_img) = old_img {
+                                // подмена preview→full: сохраняем экранный размер
+                                self.state.view.rescale_for_new_image(win, old_img, new_img);
+                            }
                         }
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
                     }
-                    Err(e) => log::warn!("декодирование не удалось: {e}"),
+                    Err(e) => {
+                        // full упал; если preview уже показан (inited) — просто остаёмся на нём
+                        log::warn!("декодирование ({}) не удалось: {e}",
+                            if stage == Stage::Preview { "preview" } else { "full" });
+                    }
                 }
             }
         }
