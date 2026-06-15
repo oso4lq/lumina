@@ -17,6 +17,10 @@ thiserror  = "1"
 log        = "0.4"
 env_logger = "0.11"
 
+[[bin]]
+name = "make_fixtures"
+path = "tests/make_fixtures.rs"
+
 [profile.dev]
 opt-level = 1          # image-декод в debug иначе мучительно медленный
 
