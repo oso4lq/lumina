@@ -207,6 +207,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         let attrs = Window::default_attributes()
             .with_title("Lumina")
+            .with_decorations(false)
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
         let window = Arc::new(event_loop.create_window(attrs).expect("create_window"));
         match Renderer::new(window.clone()) {
@@ -221,6 +222,20 @@ impl ApplicationHandler<UserEvent> for App {
                 return;
             }
         }
+
+        #[cfg(windows)]
+        {
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            crate::platform::windows::set_scale(self.state.scale);
+            if let Ok(h) = window.window_handle() {
+                if let RawWindowHandle::Win32(w) = h.as_raw() {
+                    if let Err(e) = crate::platform::windows::enable(w.hwnd.get()) {
+                        log::warn!("frameless не включён ({e}); остаёмся с декорациями");
+                    }
+                }
+            }
+        }
+
         self.window = Some(window);
 
         // Открыть стартовый файл, если был передан.
@@ -459,6 +474,8 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(r) = &mut self.renderer {
                     r.set_titlebar_height(theme::TITLEBAR_HEIGHT * self.state.scale);
                 }
+                #[cfg(windows)]
+                crate::platform::windows::set_scale(self.state.scale);
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }

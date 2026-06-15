@@ -92,7 +92,13 @@ impl Renderer {
             )
             .map_err(LuminaError::Gpu)?;
 
-        let viewer = (0.0, self.titlebar_h, screen[0], (screen[1] - self.titlebar_h).max(1.0));
+        // viewer-регион под titlebar. В вырожденно маленьком окне (высота меньше
+        // titlebar — бывает кратко при SWP_FRAMECHANGED) места под фото нет: высоту
+        // клампим к окну, а блит пропускаем, иначе set_viewport уходит за таргет.
+        let bar_h = self.titlebar_h.min(screen[1]);
+        let viewer_h = screen[1] - bar_h;
+        let viewer = (0.0, bar_h, screen[0], viewer_h);
+        let viewer_ok = viewer_h >= 1.0 && screen[0] >= 1.0;
 
         let mut encoder = self
             .ctx
@@ -113,10 +119,12 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            // 1) фото в viewer-регионе
-            self.blit.draw(&self.ctx.queue, &mut pass, view, self.image_size, viewer);
-            // viewport обратно на весь экран для UI/текста
-            pass.set_viewport(0.0, 0.0, screen[0], screen[1], 0.0, 1.0);
+            // 1) фото в viewer-регионе (если под titlebar есть место)
+            if viewer_ok {
+                self.blit.draw(&self.ctx.queue, &mut pass, view, self.image_size, viewer);
+                // viewport обратно на весь экран для UI/текста
+                pass.set_viewport(0.0, 0.0, screen[0], screen[1], 0.0, 1.0);
+            }
             // 2) UI-прямоугольники
             self.ui.draw(&mut pass);
             // 3) текст

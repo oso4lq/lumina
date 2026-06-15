@@ -19,6 +19,9 @@ pub enum LuminaError {
 
     #[error("ошибка RAW {0}: {1}")]
     Raw(std::path::PathBuf, String),
+
+    #[error("ошибка платформы: {0}")]
+    Platform(String),
 }
 
 pub type Result<T> = std::result::Result<T, LuminaError>;
