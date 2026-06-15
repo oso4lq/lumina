@@ -16,6 +16,9 @@ pub enum LuminaError {
 
     #[error("ошибка HEIC {0}: {1}")]
     Heic(std::path::PathBuf, String),
+
+    #[error("ошибка RAW {0}: {1}")]
+    Raw(std::path::PathBuf, String),
 }
 
 pub type Result<T> = std::result::Result<T, LuminaError>;

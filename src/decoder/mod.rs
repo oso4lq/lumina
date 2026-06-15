@@ -5,6 +5,7 @@ mod standard;
 pub use standard::StandardDecoder;
 
 mod heic;
+mod raw;
 
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
