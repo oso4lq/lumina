@@ -9,6 +9,12 @@ const EXTS: &[&str] = &[
     "raf", "nef", "nrw", "arw", "srf", "cr2", "cr3", "rw2", "orf", "pef", "dng", "rwl", "iiq",
 ];
 
+/// CFA крупнее 2×2 (например, X-Trans 6×6) rawler 0.7.2 демозаит некорректно
+/// (X-Trans-данные проходят через байеровский демозаик → неверный цвет).
+fn is_non_bayer_cfa(width: usize, height: usize) -> bool {
+    width > 2 || height > 2
+}
+
 pub struct RawDecoder;
 
 impl Decoder for RawDecoder {
@@ -82,5 +88,18 @@ mod tests {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/sample.raf");
         assert!(d.decode_preview(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn bayer_2x2_is_bayer() {
+        assert!(!is_non_bayer_cfa(2, 2));
+    }
+
+    #[test]
+    fn xtrans_6x6_is_non_bayer() {
+        assert!(is_non_bayer_cfa(6, 6));
+        // несимметричные/прочие крупные паттерны тоже считаем не-Байером
+        assert!(is_non_bayer_cfa(2, 6));
+        assert!(is_non_bayer_cfa(6, 2));
     }
 }
