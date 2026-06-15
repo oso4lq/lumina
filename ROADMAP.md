@@ -13,7 +13,8 @@
 |---|---|---|---|
 | **v0.1 — Viewer core** | 🟢 | Окно + wgpu, показ JPEG/PNG, zoom/pan, double-click fit/100%, навигация стрелками | [дизайн](docs/superpowers/specs/2026-06-15-lumina-v0.1-design.md) · [план](docs/superpowers/plans/2026-06-15-lumina-v0.1.md) |
 | **v0.2 — RAW и форматы** | 🟢 | rawler (RAF/NEF/ARW/CR2), HEIC через libheif-rs, embedded preview, async-декод полного RAW | [дизайн](docs/superpowers/specs/2026-06-15-lumina-v0.2-design.md) · [план](docs/superpowers/plans/2026-06-15-lumina-v0.2.md) |
-| **v0.3 — UI** | ⚪ | Кастомный frameless titlebar, карусель миниатюр, divider toggle, мета-панель, кнопки fullscreen/EXIF | — |
+| **v0.3a — UI-фундамент + titlebar** | 🟢 | Движок UI-примитивов (wgpu SDF-rect + glyphon-текст + Segoe MDL2-иконки), нативный frameless-фрейм (WM_NCCALCSIZE/NCHITTEST), кастомный titlebar | [дизайн](docs/superpowers/specs/2026-06-15-lumina-v0.3a-ui-foundation-design.md) · [план](docs/superpowers/plans/2026-06-15-lumina-v0.3a-ui-foundation.md) |
+| **v0.3b — Bottom bar** | ⚪ | Divider toggle, мета-панель, карусель миниатюр, кнопки fullscreen/EXIF (поверх движка v0.3a) | — |
 | **v0.4 — EXIF и трансформации** | ⚪ | Чтение EXIF (kamadak-exif), EXIF popup с редактированием, запись/XMP sidecar, повороты/отражения | — |
 | **v0.5 — Полировка** | ⚪ | Кэш миниатюр (sled), префетч ±2, folder watcher (notify), свайп трекпадом, installer + реестр | — |
 | **v0.6 — Slideshow и пр.** | ⚪ | Slideshow, темизация (System/Dark/Light), multi-monitor fullscreen, режимы сортировки каталога | — |
@@ -47,6 +48,28 @@
 (JPEG XL у него только для целочисленных данных). Показываем встроенное превью 1024px
 (цвет верный, мягко). Истинный full-res потребовал бы libraw + Adobe DNG SDK (тяжёлая
 нативная сборка на MSVC) — отложено. Детали разбора — в `docs/superpowers/specs/`.
+
+## Прогресс v0.3a (детально)
+
+- [x] Чистое ядро UI (`src/ui/`): `theme` (палитра + srgb→linear), `layout` (titlebar/кнопки/viewer
+      в физ. px), `hit` (курсор→регион), `scene` (UiState → `DrawCmd`) — покрыто юнит-тестами (17 новых)
+- [x] `UiPipeline` — инстансовый SDF rounded-rect (`assets/shaders/ui.wgsl`)
+- [x] `TextLayer` — обёртка glyphon (текст заголовка + глифы кнопок из Segoe MDL2 Assets)
+- [x] Композиция кадра: фото в viewer-viewport (под titlebar) → UI-прямоугольники → текст
+- [x] Кастомный titlebar: заголовок `имя · Lumina`, кнопки min/max/close, hover (close — красный),
+      глиф max↔restore
+- [x] Нативный frameless (`src/platform/windows.rs`): `WM_NCCALCSIZE` убирает caption (сохраняя
+      resize/Aero Snap/тень/скруглённые углы), `WM_NCHITTEST` мапит регионы в HT-коды (caption-drag, края)
+- [x] Viewer-инсет вида через GPU-viewport (`ViewTransform` неизменён); zoom к курсору скорректирован
+      на высоту titlebar
+- [x] Гард рендера от вырожденно маленького окна (ниже titlebar)
+
+Код и юнит-тесты готовы (46 тестов). Приёмка на реальных файлах пройдена: titlebar поверх фото,
+frameless с resize/snap/тенью, кнопки окна, zoom/pan/навигация. EXIF-модель камеры в заголовке —
+отложена в v0.4 (пока `имя · Lumina`). Bottom bar / карусель / divider — v0.3b.
+
+> **Окружение сборки/запуска** идентично v0.2 (vcpkg/libclang ниже). Доп. зависимостей нативной
+> сборки v0.3a не вводит: glyphon — pure-Rust, `windows`-crate тянет только заголовки Win32.
 
 ## Установленное окружение
 
