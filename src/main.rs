@@ -1,3 +1,4 @@
+mod catalog;
 mod decoder;
 mod error;
 
