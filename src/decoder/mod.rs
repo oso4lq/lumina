@@ -4,6 +4,8 @@ use std::path::Path;
 mod standard;
 pub use standard::StandardDecoder;
 
+mod heic;
+
 #[derive(Debug, Clone)]
 pub struct DecodedImage {
     pub rgba: Vec<u8>,

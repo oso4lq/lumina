@@ -13,6 +13,9 @@ pub enum LuminaError {
 
     #[error("ошибка инициализации GPU: {0}")]
     Gpu(String),
+
+    #[error("ошибка HEIC {0}: {1}")]
+    Heic(std::path::PathBuf, String),
 }
 
 pub type Result<T> = std::result::Result<T, LuminaError>;
