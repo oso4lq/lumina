@@ -5,6 +5,7 @@ mod error;
 mod input;
 mod platform;
 mod renderer;
+mod thumbnail;
 mod ui;
 mod view;
 
