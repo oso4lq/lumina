@@ -192,6 +192,7 @@ impl ApplicationHandler<UserEvent> for App {
                             // вписать в окно
                             let win = r.surface_size();
                             let z = crate::view::fit_zoom(win, glam::Vec2::new(img.width as f32, img.height as f32));
+                            self.state.view.set_min_zoom(z); // fit — нижняя граница зума
                             self.state.view.set_zoom_immediate(z);
                             self.state.view.set_fit(true);
                             self.state.view.set_pan(glam::Vec2::ZERO);
@@ -212,10 +213,12 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     r.resize(size.width, size.height);
-                    // fit прилипает к ресайзу
-                    if self.state.view.is_fit() {
-                        if let Some(img) = r.image_size() {
-                            let z = crate::view::fit_zoom(r.surface_size(), img);
+                    if let Some(img) = r.image_size() {
+                        // fit меняется с размером окна → обновляем нижнюю границу зума
+                        let z = crate::view::fit_zoom(r.surface_size(), img);
+                        self.state.view.set_min_zoom(z);
+                        // fit прилипает к ресайзу
+                        if self.state.view.is_fit() {
                             self.state.view.set_zoom_immediate(z);
                             self.state.view.set_pan(glam::Vec2::ZERO);
                         }
@@ -248,8 +251,12 @@ impl ApplicationHandler<UserEvent> for App {
                 let pos = glam::Vec2::new(position.x as f32, position.y as f32);
                 if self.state.dragging {
                     let delta = pos - self.state.last_cursor;
-                    let pan = self.state.view.pan() + delta;
-                    self.state.view.set_pan(pan);
+                    self.state.view.set_pan(self.state.view.pan() + delta);
+                    if let Some(r) = &self.renderer {
+                        if let Some(img) = r.image_size() {
+                            self.state.view.clamp_pan(r.surface_size(), img);
+                        }
+                    }
                     if let Some(w) = &self.window { w.request_redraw(); }
                 }
                 self.state.last_cursor = pos;
@@ -260,8 +267,17 @@ impl ApplicationHandler<UserEvent> for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 50.0,
                 };
-                let out = crate::input::on_wheel(&mut self.state.view, self.state.cursor, lines);
-                if out.redraw { if let Some(w) = &self.window { w.request_redraw(); } }
+                let win = self.renderer.as_ref().map(|r| r.surface_size());
+                if let Some(win) = win {
+                    let out = crate::input::on_wheel(&mut self.state.view, self.state.cursor, win, lines);
+                    // не допускаем полей по краям после зума к курсору
+                    if let Some(r) = &self.renderer {
+                        if let Some(img) = r.image_size() {
+                            self.state.view.clamp_pan(win, img);
+                        }
+                    }
+                    if out.redraw { if let Some(w) = &self.window { w.request_redraw(); } }
+                }
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 use winit::event::{ElementState, MouseButton};
@@ -279,11 +295,15 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.state.last_click = None;
                             } else {
                                 self.state.last_click = Some((now, self.state.cursor));
-                                self.state.dragging = true;
-                                if let Some(w) = &self.window {
-                                    w.set_cursor(winit::window::Cursor::Icon(
-                                        winit::window::CursorIcon::Grabbing,
-                                    ));
+                                // pan только когда фото увеличено зумом сверх fit
+                                let can_pan = self.state.view.zoom() > self.state.view.min_zoom();
+                                self.state.dragging = can_pan;
+                                if can_pan {
+                                    if let Some(w) = &self.window {
+                                        w.set_cursor(winit::window::Cursor::Icon(
+                                            winit::window::CursorIcon::Grabbing,
+                                        ));
+                                    }
                                 }
                             }
                         }

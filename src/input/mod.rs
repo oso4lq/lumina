@@ -13,12 +13,13 @@ pub struct InputOutcome {
 pub const WHEEL_STEP: f32 = 1.15;
 
 /// Обработать «прокрутку колёсика на delta_lines» в позиции курсора.
-pub fn on_wheel(view: &mut ViewTransform, cursor: Vec2, delta_lines: f32) -> InputOutcome {
+/// `win` — размер окна (нужен для корректного центра зума под курсором).
+pub fn on_wheel(view: &mut ViewTransform, cursor: Vec2, win: Vec2, delta_lines: f32) -> InputOutcome {
     if delta_lines == 0.0 {
         return InputOutcome::default();
     }
     let factor = if delta_lines > 0.0 { WHEEL_STEP } else { 1.0 / WHEEL_STEP };
-    view.zoom_at(cursor, view.zoom() * factor);
+    view.zoom_at(cursor, win, view.zoom() * factor);
     InputOutcome { redraw: true, navigate: None }
 }
 
@@ -47,18 +48,20 @@ mod tests {
 
     #[test]
     fn wheel_up_zooms_in() {
+        let win = Vec2::new(1280.0, 800.0);
         let mut v = ViewTransform::new();
         v.set_zoom_immediate(1.0);
-        let out = on_wheel(&mut v, Vec2::new(10.0, 10.0), 1.0);
+        let out = on_wheel(&mut v, Vec2::new(10.0, 10.0), win, 1.0);
         assert!(out.redraw);
         assert!(v.zoom() > 1.0);
     }
 
     #[test]
     fn wheel_down_zooms_out() {
+        let win = Vec2::new(1280.0, 800.0);
         let mut v = ViewTransform::new();
         v.set_zoom_immediate(1.0);
-        on_wheel(&mut v, Vec2::new(10.0, 10.0), -1.0);
+        on_wheel(&mut v, Vec2::new(10.0, 10.0), win, -1.0);
         assert!(v.zoom() < 1.0);
     }
 

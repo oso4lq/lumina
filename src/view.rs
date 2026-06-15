@@ -11,6 +11,8 @@ pub struct ViewTransform {
     zoom_target: f32,
     zoom_start: f32,
     anim_elapsed: f32,
+    /// Нижняя граница зума: fit-zoom (фото не делаем меньше окна). ZOOM_MIN до загрузки.
+    min_zoom: f32,
     // задел под v0.4
     pub rotation: u8,
     pub flip_h: bool,
@@ -39,6 +41,7 @@ impl ViewTransform {
             zoom_target: 1.0,
             zoom_start: 1.0,
             anim_elapsed: ANIM_DURATION, // не анимируется
+            min_zoom: ZOOM_MIN,
             rotation: 0,
             flip_h: false,
             flip_v: false,
@@ -58,18 +61,39 @@ impl ViewTransform {
         self.pan = p;
     }
 
+    pub fn min_zoom(&self) -> f32 {
+        self.min_zoom
+    }
+
+    /// Кламп зума в актуальный диапазон [min_zoom .. ZOOM_MAX].
+    fn clamp_zoom(&self, z: f32) -> f32 {
+        z.clamp(self.min_zoom, ZOOM_MAX)
+    }
+
+    /// Установить нижнюю границу зума (= fit-zoom). Подтягивает текущий зум, если он ниже.
+    pub fn set_min_zoom(&mut self, m: f32) {
+        self.min_zoom = m.clamp(ZOOM_MIN, ZOOM_MAX);
+        if self.zoom < self.min_zoom {
+            self.zoom = self.min_zoom;
+            self.zoom_target = self.min_zoom;
+        }
+    }
+
     pub fn set_zoom_immediate(&mut self, z: f32) {
-        self.zoom = z.clamp(ZOOM_MIN, ZOOM_MAX);
+        self.zoom = self.clamp_zoom(z);
         self.zoom_target = self.zoom;
         self.anim_elapsed = ANIM_DURATION;
     }
 
     /// Зум с сохранением точки изображения под курсором (мгновенный).
-    pub fn zoom_at(&mut self, cursor: Vec2, new_zoom: f32) {
+    /// `win` нужен потому, что матрица центрирует картинку через (win - scaled)/2,
+    /// поэтому опорная точка зума берётся относительно центра окна.
+    pub fn zoom_at(&mut self, cursor: Vec2, win: Vec2, new_zoom: f32) {
         let old = self.zoom;
-        let nz = new_zoom.clamp(ZOOM_MIN, ZOOM_MAX);
-        // pan' = cursor - (cursor - pan) * (nz / old)
-        self.pan = cursor - (cursor - self.pan) * (nz / old);
+        let nz = self.clamp_zoom(new_zoom);
+        let pivot = cursor - win * 0.5;
+        // pan' = pivot - (pivot - pan) * (nz / old)
+        self.pan = pivot - (pivot - self.pan) * (nz / old);
         self.zoom = nz;
         self.zoom_target = nz;
         self.anim_elapsed = ANIM_DURATION;
@@ -79,7 +103,7 @@ impl ViewTransform {
     /// Запустить плавную анимацию zoom к цели.
     pub fn animate_zoom_to(&mut self, target: f32) {
         self.zoom_start = self.zoom;
-        self.zoom_target = target.clamp(ZOOM_MIN, ZOOM_MAX);
+        self.zoom_target = self.clamp_zoom(target);
         self.anim_elapsed = 0.0;
     }
 
@@ -103,6 +127,17 @@ impl ViewTransform {
 
     pub fn set_fit(&mut self, fit: bool) {
         self.is_fit = fit;
+    }
+
+    /// Ограничить pan так, чтобы изображение не отрывалось от краёв окна.
+    /// По оси, где картинка больше окна, pan ∈ ±(scaled-win)/2 (без полей по краям).
+    /// По оси, где картинка ≤ окна, pan = 0 (центрирование, перемещение запрещено).
+    pub fn clamp_pan(&mut self, win: Vec2, img: Vec2) {
+        let scaled = img * self.zoom;
+        let limit_x = ((scaled.x - win.x) * 0.5).max(0.0);
+        let limit_y = ((scaled.y - win.y) * 0.5).max(0.0);
+        self.pan.x = self.pan.x.clamp(-limit_x, limit_x);
+        self.pan.y = self.pan.y.clamp(-limit_y, limit_y);
     }
 
     /// Матрица: пиксели изображения → clip space, со вшитыми zoom и pan.
@@ -154,17 +189,60 @@ mod tests {
         assert_eq!(v.zoom(), ZOOM_MIN);
     }
 
+    /// Точка изображения (в пикселях картинки) под экранным курсором —
+    /// с учётом центрирования матрицей: origin = (win - img*zoom)/2 + pan.
+    fn image_point_under(v: &ViewTransform, win: Vec2, img: Vec2, cursor: Vec2) -> Vec2 {
+        let origin = (win - img * v.zoom()) * 0.5 + v.pan();
+        (cursor - origin) / v.zoom()
+    }
+
     #[test]
     fn zoom_at_cursor_keeps_point_fixed() {
+        let win = Vec2::new(1280.0, 800.0);
+        let img = Vec2::new(6000.0, 4000.0);
         let mut v = ViewTransform::new();
-        v.set_zoom_immediate(1.0);
-        v.set_pan(Vec2::ZERO);
-        let cursor = Vec2::new(100.0, 80.0);
-        // точка изображения под курсором до зума
-        let before = (cursor - v.pan()) / v.zoom();
-        v.zoom_at(cursor, 2.0); // зум к 2x с центром под курсором
-        let after = (cursor - v.pan()) / v.zoom();
-        assert!((before - after).length() < 1e-3);
+        v.set_zoom_immediate(0.3);
+        v.set_pan(Vec2::new(40.0, -25.0));
+        let cursor = Vec2::new(900.0, 220.0);
+        // точка картинки под курсором до и после зума должна совпасть
+        let before = image_point_under(&v, win, img, cursor);
+        v.zoom_at(cursor, win, 0.6);
+        let after = image_point_under(&v, win, img, cursor);
+        assert!((before - after).length() < 0.5, "before={before:?} after={after:?}");
+    }
+
+    #[test]
+    fn pan_clamped_to_image_bounds() {
+        let win = Vec2::new(1000.0, 800.0);
+        let img = Vec2::new(2000.0, 2000.0);
+        let mut v = ViewTransform::new();
+        v.set_zoom_immediate(1.0); // scaled 2000×2000 > окна
+        v.set_pan(Vec2::new(10_000.0, -10_000.0));
+        v.clamp_pan(win, img);
+        // limit_x = (2000-1000)/2 = 500, limit_y = (2000-800)/2 = 600
+        assert_eq!(v.pan(), Vec2::new(500.0, -600.0));
+    }
+
+    #[test]
+    fn pan_zeroed_when_image_fits() {
+        let win = Vec2::new(2000.0, 2000.0);
+        let img = Vec2::new(1000.0, 800.0);
+        let mut v = ViewTransform::new();
+        v.set_zoom_immediate(1.0); // картинка меньше окна
+        v.set_pan(Vec2::new(123.0, 45.0));
+        v.clamp_pan(win, img);
+        assert_eq!(v.pan(), Vec2::ZERO);
+    }
+
+    #[test]
+    fn zoom_does_not_go_below_min() {
+        let win = Vec2::new(1280.0, 800.0);
+        let mut v = ViewTransform::new();
+        v.set_min_zoom(0.2); // fit-zoom
+        v.set_zoom_immediate(0.5);
+        // попытка зумнуть далеко вниз упирается в min_zoom
+        v.zoom_at(Vec2::new(640.0, 400.0), win, 0.01);
+        assert_eq!(v.zoom(), 0.2);
     }
 
     #[test]
