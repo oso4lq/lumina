@@ -161,6 +161,9 @@ impl ApplicationHandler<UserEvent> for App {
                     w.request_redraw();
                 }
             }
+            WindowEvent::DroppedFile(path) => {
+                self.open_file(path);
+            }
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();
                 let dt = (now - self.state.last_frame).as_secs_f32();
