@@ -315,7 +315,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.state.view.tick(dt);
                 if let Some(r) = &mut self.renderer {
                     let win = r.surface_size();
-                    let l = layout::compute(win, self.state.scale);
+                    let l = layout::compute(win, self.state.scale, 1.0, false);
                     let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale);
                     if let Err(e) = r.render(&self.state.view, &cmds) {
                         log::warn!("render: {e}");
@@ -344,7 +344,7 @@ impl ApplicationHandler<UserEvent> for App {
                 // hover по кнопкам titlebar
                 if let Some(r) = &self.renderer {
                     let win = r.surface_size();
-                    let l = layout::compute(win, self.state.scale);
+                    let l = layout::compute(win, self.state.scale, 1.0, false);
                     let region = hit::hit(&l, win, pos, self.state.scale);
                     if region != self.state.ui.hovered {
                         self.state.ui.hovered = region;
@@ -384,7 +384,7 @@ impl ApplicationHandler<UserEvent> for App {
                             // клик по кнопкам titlebar имеет приоритет
                             if let Some(r) = &self.renderer {
                                 let win = r.surface_size();
-                                let l = layout::compute(win, self.state.scale);
+                                let l = layout::compute(win, self.state.scale, 1.0, false);
                                 match hit::hit(&l, win, self.state.cursor, self.state.scale) {
                                     hit::Region::Close => {
                                         event_loop.exit();

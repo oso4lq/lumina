@@ -112,7 +112,7 @@ mod tests {
     use glam::Vec2;
 
     fn fixture(hovered: Region, maximized: bool, title: &str) -> Vec<DrawCmd> {
-        let layout = compute(Vec2::new(1280.0, 800.0), 1.0);
+        let layout = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
         let theme = ThemePalette::dark();
         let state = UiState { title: title.into(), hovered, maximized };
         build(&state, &layout, &theme, 1.0)

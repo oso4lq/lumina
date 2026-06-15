@@ -71,7 +71,7 @@ mod tests {
     use crate::ui::layout::compute;
 
     fn layout() -> UiLayout {
-        compute(Vec2::new(1280.0, 800.0), 1.0)
+        compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false)
     }
 
     #[test]

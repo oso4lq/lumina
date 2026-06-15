@@ -98,7 +98,7 @@ unsafe extern "system" fn subclass_proc(
             let cursor = Vec2::new(pt.x as f32, pt.y as f32);
 
             let s = scale();
-            let l = layout::compute(win, s);
+            let l = layout::compute(win, s, 1.0, false);
             match hit::hit(&l, win, cursor, s) {
                 Region::Caption => LRESULT(HTCAPTION as isize),
                 Region::Resize(edge) => LRESULT(match edge {
