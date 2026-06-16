@@ -9,6 +9,8 @@ pub const GLYPH_MINIMIZE: char = '\u{E921}'; // ChromeMinimize
 pub const GLYPH_MAXIMIZE: char = '\u{E922}'; // ChromeMaximize
 pub const GLYPH_RESTORE: char = '\u{E923}';  // ChromeRestore
 pub const GLYPH_CLOSE: char = '\u{E8BB}';    // ChromeClose
+pub const GLYPH_EDIT: char = '\u{E70F}';   // Segoe MDL2 Edit (карандаш)
+pub const GLYPH_DELETE: char = '\u{E74D}'; // Segoe MDL2 Delete (корзина)
 
 /// Семейство шрифта кнопок окна.
 pub const ICON_FONT_FAMILY: &str = "Segoe MDL2 Assets";
@@ -329,6 +331,32 @@ fn row_matches(filter: &str, group: &str, tag: &str, value: &str) -> bool {
     format!("{group}:{tag}").to_lowercase().contains(&f) || value.to_lowercase().contains(&f)
 }
 
+use std::collections::BTreeMap;
+
+/// Операция над тегом в буфере правок (зеркало app-стейта; (group,tag) → op).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PendingOp {
+    Set(String),
+    Delete,
+}
+
+/// Состояние редактирования для отрисовки popup (часть 2).
+pub struct PopupEditState<'a> {
+    pub pending: &'a BTreeMap<(String, String), PendingOp>,
+    pub delete_gps: bool,
+    /// Активная инлайн-правка: (group, tag) + буфер редактора и его метрики.
+    pub editing: Option<(&'a str, &'a str)>,
+    pub editor: &'a TextEdit,
+    pub editor_caret_px: f32,
+    pub editor_sel_px: Option<(f32, f32)>,
+    /// Индекс строки под курсором (из popup_rows) — для показа ✎/✕ и hover GPS.
+    pub hovered_row: Option<usize>,
+    /// Показать бар подтверждения закрытия вместо обычного футера.
+    pub confirm_close: bool,
+    /// Есть ли несохранённые правки (для активности Save).
+    pub has_pending: bool,
+}
+
 /// Вид строки списка тегов popup.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopupRowKind {
@@ -422,6 +450,7 @@ pub fn build_popup(
     sel_px: Option<(f32, f32)>,   // границы выделения (если есть)
     caret_visible: bool,          // фаза мигания + фокус: рисовать ли каретку сейчас
     focused: bool,                // поле поиска в фокусе (рамка фокуса)
+    edit: &PopupEditState,
 ) -> Vec<DrawCmd> {
     use crate::ui::layout::{popup_group_h, popup_layout, popup_row_h};
     let mut cmds = Vec::new();
@@ -514,63 +543,110 @@ pub fn build_popup(
         return cmds;
     };
 
-    // Строки: проходим группы → заголовок группы (если есть видимые) + строки.
-    let row_h = popup_row_h(scale);
+    // Строки: единый итератор popup_rows (та же геометрия, что в hit/app).
+    let body = p.body;
+    let rows = popup_rows(tags, &search.text(), scale, scroll, body);
     let grp_h = popup_group_h(scale);
-    let filter = search.text();
-    let body_top = p.body.y;
-    let body_bot = p.body.y + p.body.h;
-    // верхний зазор тела = пустое поле под заголовком (симметрично зазору заголовок↔поиск)
-    let mut cursor_y = body_top - scroll + popup_body_top_pad(scale); // виртуальная позиция (со скроллом)
+    let body_top = body.y;
+    let body_bot = body.y + body.h;
+    for (i, r) in rows.iter().enumerate() {
+        if r.y + r.h <= body_top || r.y >= body_bot {
+            continue; // вне тела
+        }
+        match r.kind {
+            PopupRowKind::Group => {
+                let band = intersect(Rect { x: body.x, y: r.y, w: body.w, h: grp_h }, body);
+                if band.h > 0.0 {
+                    cmds.push(DrawCmd::Rect { rect: band, color: theme.popup_group_bg, radius: 0.0, layer: RectLayer::Bg });
+                }
+                let gr = Rect { x: body.x + pad, y: r.y, w: body.w - pad * 2.0, h: grp_h };
+                cmds.push(DrawCmd::Text { rect: gr, text: r.group.clone(), size: theme::POPUP_GROUP_SIZE * scale, color: theme.text_primary, align: Align::Left, clip: Some(intersect(gr, body)) });
+                // GPS: действие «удалить всё» по hover группы (или если уже взведено)
+                if r.group == "GPS" && (edit.hovered_row == Some(i) || edit.delete_gps) {
+                    let (_e, del) = popup_row_actions(r, body, scale);
+                    let col = if edit.delete_gps { theme.danger } else { theme.text_secondary };
+                    cmds.push(DrawCmd::Icon { rect: del, glyph: GLYPH_DELETE, size: theme::POPUP_ACTION_ICON * scale, color: col, font: IconFont::WindowMdl2 });
+                }
+            }
+            PopupRowKind::Tag => {
+                let key = (r.group.clone(), r.tag.clone());
+                let op = edit.pending.get(&key);
+                let gps_deleted = edit.delete_gps && r.group == "GPS";
+                let deleted = matches!(op, Some(PendingOp::Delete)) || gps_deleted;
+                let editing_this = edit.editing == Some((r.group.as_str(), r.tag.as_str()));
+                // ключ слева
+                let kr = Rect { x: body.x + pad, y: r.y, w: (body.w - pad * 2.0) * 0.45, h: r.h };
+                cmds.push(DrawCmd::Text { rect: kr, text: r.tag.clone(), size: theme::POPUP_ROW_SIZE * scale, color: theme.text_secondary, align: Align::Left, clip: Some(intersect(kr, body)) });
+                let vx = body.x + (body.w - pad * 2.0) * 0.45;
+                let vw = (body.w - pad * 2.0) * 0.55;
+                let vr = Rect { x: vx, y: r.y, w: vw, h: r.h };
+                if editing_this {
+                    // инлайн-поле редактора: подложка + текст редактора + каретка/выделение
+                    let field = Rect { x: vx, y: r.y + 3.0 * scale, w: vw - pad, h: r.h - 6.0 * scale };
+                    cmds.push(DrawCmd::Rect { rect: field, color: theme.popup_field_bg, radius: 4.0 * scale, layer: RectLayer::Bg });
+                    let tx = field.x + 6.0 * scale;
+                    let line_h = theme::POPUP_ROW_SIZE * 1.2 * scale;
+                    let ty = r.y + (r.h - line_h) * 0.5;
+                    if let Some((a, b)) = edit.editor_sel_px {
+                        let x0 = tx + a.min(b);
+                        let x1 = tx + a.max(b);
+                        if x1 > x0 {
+                            cmds.push(DrawCmd::Rect { rect: Rect { x: x0, y: ty, w: x1 - x0, h: line_h }, color: theme.selection_bg, radius: 2.0 * scale, layer: RectLayer::Bg });
+                        }
+                    }
+                    let etext = edit.editor.text();
+                    cmds.push(DrawCmd::Text { rect: Rect { x: tx, y: r.y, w: field.w - 12.0 * scale, h: r.h }, text: etext, size: theme::POPUP_ROW_SIZE * scale, color: theme.text_primary, align: Align::Left, clip: Some(intersect(field, body)) });
+                    if caret_visible {
+                        let cx = (tx + edit.editor_caret_px).min(field.x + field.w - 2.0 * scale);
+                        cmds.push(DrawCmd::Rect { rect: Rect { x: cx, y: ty, w: theme::POPUP_CARET_W * scale, h: line_h }, color: theme.text_primary, radius: 0.0, layer: RectLayer::Bg });
+                    }
+                } else {
+                    // значение: pending Set → новое значение акцентом; Delete/gps → зачёркнуто/приглушено
+                    let shown = match op {
+                        Some(PendingOp::Set(v)) => v.clone(),
+                        _ => r.value.clone(),
+                    };
+                    let col = match op {
+                        Some(PendingOp::Set(_)) => theme.pending_mark,
+                        _ if deleted => theme.text_secondary,
+                        _ => theme.text_primary,
+                    };
+                    cmds.push(DrawCmd::Text { rect: vr, text: shown, size: theme::POPUP_ROW_SIZE * scale, color: col, align: Align::Left, clip: Some(intersect(vr, body)) });
+                    if deleted {
+                        // линия зачёркивания
+                        let ly = r.y + r.h * 0.5;
+                        cmds.push(DrawCmd::Rect { rect: Rect { x: vx, y: ly, w: vw * 0.9, h: 1.0 * scale }, color: theme.text_secondary, radius: 0.0, layer: RectLayer::Bg });
+                    }
+                    // ✎/✕ по hover редактируемой строки
+                    if r.editable && edit.hovered_row == Some(i) && !deleted {
+                        let (er, dr) = popup_row_actions(r, body, scale);
+                        cmds.push(DrawCmd::Icon { rect: er, glyph: GLYPH_EDIT, size: theme::POPUP_ACTION_ICON * scale, color: theme.text_secondary, font: IconFont::WindowMdl2 });
+                        cmds.push(DrawCmd::Icon { rect: dr, glyph: GLYPH_DELETE, size: theme::POPUP_ACTION_ICON * scale, color: theme.danger, font: IconFont::WindowMdl2 });
+                    }
+                }
+            }
+        }
+    }
 
-    for g in &tags.groups {
-        let visible: Vec<&(String, String)> =
-            g.tags.iter().filter(|(t, v)| row_matches(&filter, &g.name, t, v)).collect();
-        if visible.is_empty() {
-            continue;
-        }
-        // заголовок группы (если в пределах тела); клип по `p.body` — при скролле не лезет за тело
-        if cursor_y + grp_h > body_top && cursor_y < body_bot {
-            // плашка на всю ширину тела — заметный заголовок (геом. клип по body)
-            let band = intersect(Rect { x: p.body.x, y: cursor_y, w: p.body.w, h: grp_h }, p.body);
-            if band.h > 0.0 {
-                cmds.push(DrawCmd::Rect { rect: band, color: theme.popup_group_bg, radius: 0.0, layer: RectLayer::Bg });
-            }
-            let r = Rect { x: p.body.x + pad, y: cursor_y, w: p.body.w - pad * 2.0, h: grp_h };
-            cmds.push(DrawCmd::Text {
-                rect: r,
-                text: g.name.clone(),
-                size: theme::POPUP_GROUP_SIZE * scale,
-                color: theme.text_primary,
-                align: Align::Left,
-                clip: Some(intersect(r, p.body)),
-            });
-        }
-        cursor_y += grp_h;
-        for (tag, value) in visible {
-            if cursor_y + row_h > body_top && cursor_y < body_bot {
-                // ключ слева, значение справа
-                let r_tag = Rect { x: p.body.x + pad, y: cursor_y, w: (p.body.w - pad * 2.0) * 0.45, h: row_h };
-                cmds.push(DrawCmd::Text {
-                    rect: r_tag,
-                    text: tag.clone(),
-                    size: theme::POPUP_ROW_SIZE * scale,
-                    color: theme.text_secondary,
-                    align: Align::Left,
-                    clip: Some(intersect(r_tag, p.body)),
-                });
-                let r_val = Rect { x: p.body.x + (p.body.w - pad * 2.0) * 0.45, y: cursor_y, w: (p.body.w - pad * 2.0) * 0.55, h: row_h };
-                cmds.push(DrawCmd::Text {
-                    rect: r_val,
-                    text: value.clone(),
-                    size: theme::POPUP_ROW_SIZE * scale,
-                    color: theme.text_primary,
-                    align: Align::Left,
-                    clip: Some(intersect(r_val, p.body)),
-                });
-            }
-            cursor_y += row_h;
-        }
+    // Футер: всегда виден. При confirm_close — бар подтверждения.
+    let (save, cancel) = crate::ui::layout::popup_footer_buttons(&p, scale);
+    cmds.push(DrawCmd::Rect { rect: p.footer, color: theme.popup_group_bg, radius: 0.0, layer: RectLayer::Bg });
+    let btn_text = |cmds: &mut Vec<DrawCmd>, rect: Rect, text: &str, bg: [f32; 4], fg: [f32; 4]| {
+        cmds.push(DrawCmd::Rect { rect, color: bg, radius: 6.0 * scale, layer: RectLayer::Bg });
+        cmds.push(DrawCmd::Text { rect, text: text.to_string(), size: theme::POPUP_BTN_SIZE * scale, color: fg, align: Align::Center, clip: Some(rect) });
+    };
+    if edit.confirm_close {
+        let lr = Rect { x: p.footer.x + theme::POPUP_PAD * scale, y: p.footer.y, w: cancel.x - p.footer.x - theme::POPUP_PAD * scale, h: p.footer.h };
+        cmds.push(DrawCmd::Text { rect: lr, text: "Несохранённые изменения".to_string(), size: theme::POPUP_BTN_SIZE * scale, color: theme.text_primary, align: Align::Left, clip: Some(lr) });
+        // cancel→Отменить(discard), save→Сохранить; Keep ("Продолжить") — слева от cancel
+        let keep = Rect { x: cancel.x - (save.x - cancel.x), y: cancel.y, w: cancel.w, h: cancel.h };
+        btn_text(&mut cmds, keep, "Продолжить", theme.button_hover, theme.text_primary);
+        btn_text(&mut cmds, cancel, "Отменить", theme.button_hover, theme.text_primary);
+        btn_text(&mut cmds, save, "Сохранить", theme.save_bg, theme.text_primary);
+    } else {
+        btn_text(&mut cmds, cancel, "Отменить всё", theme.button_hover, theme.text_primary);
+        let (sbg, sfg) = if edit.has_pending { (theme.save_bg, theme.text_primary) } else { (theme.button_hover, theme.text_secondary) };
+        btn_text(&mut cmds, save, "Сохранить", sbg, sfg);
     }
     cmds
 }
@@ -716,6 +792,67 @@ mod tests {
         )
     }
 
+    fn empty_edit<'a>(editor: &'a crate::ui::textedit::TextEdit) -> PopupEditState<'a> {
+        use std::collections::BTreeMap;
+        // утечка пустой map ради 'a в тесте — допустимо (тестовый процесс короткоживущий)
+        let pending: &'static BTreeMap<(String, String), PendingOp> = Box::leak(Box::new(BTreeMap::new()));
+        PopupEditState {
+            pending,
+            delete_gps: false,
+            editing: None,
+            editor,
+            editor_caret_px: 0.0,
+            editor_sel_px: None,
+            hovered_row: None,
+            confirm_close: false,
+            has_pending: false,
+        }
+    }
+
+    #[test]
+    fn popup_footer_buttons_emitted() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let search = crate::ui::textedit::TextEdit::new();
+        let editor = crate::ui::textedit::TextEdit::new();
+        let edit = empty_edit(&editor);
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
+        let has_save = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Сохранить"));
+        let has_cancel = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Отменить всё"));
+        assert!(has_save && has_cancel);
+    }
+
+    #[test]
+    fn popup_pending_set_marks_new_value() {
+        use std::collections::BTreeMap;
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let search = crate::ui::textedit::TextEdit::new();
+        let editor = crate::ui::textedit::TextEdit::new();
+        let mut map: BTreeMap<(String, String), PendingOp> = BTreeMap::new();
+        map.insert(("EXIF".into(), "Make".into()), PendingOp::Set("NEWVAL".into()));
+        let edit = PopupEditState { pending: &map, delete_gps: false, editing: None, editor: &editor, editor_caret_px: 0.0, editor_sel_px: None, hovered_row: None, confirm_close: false, has_pending: true };
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
+        // новое значение отрисовано вместо старого
+        assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "NEWVAL")));
+    }
+
+    #[test]
+    fn popup_confirm_close_bar() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let search = crate::ui::textedit::TextEdit::new();
+        let editor = crate::ui::textedit::TextEdit::new();
+        let mut edit = empty_edit(&editor);
+        edit.confirm_close = true;
+        edit.has_pending = true;
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
+        assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text.contains("есохранён"))));
+    }
+
     #[test]
     fn popup_rows_groups_then_tags_editable_flag() {
         let win = glam::Vec2::new(1280.0, 800.0);
@@ -740,7 +877,8 @@ mod tests {
         let theme = ThemePalette::dark();
         let tags = sample_tags();
         let search = crate::ui::textedit::TextEdit::new();
-        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true);
+        let editor = crate::ui::textedit::TextEdit::new();
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &empty_edit(&editor));
         // есть текст значения Model
         let has_model = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "X-T5"));
         assert!(has_model);
@@ -756,7 +894,8 @@ mod tests {
         let tags = sample_tags();
         let mut search = crate::ui::textedit::TextEdit::new();
         search.insert_str("model"); // фильтр (без регистра) — только строка Model
-        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true);
+        let editor = crate::ui::textedit::TextEdit::new();
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &empty_edit(&editor));
         let has_model = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "X-T5"));
         let has_make = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Fujifilm"));
         assert!(has_model);
@@ -768,7 +907,8 @@ mod tests {
         let win = glam::Vec2::new(1280.0, 800.0);
         let theme = ThemePalette::dark();
         let search = crate::ui::textedit::TextEdit::new();
-        let cmds = build_popup(win, 1.0, &theme, "a.jpg", None, &search, 0.0, Some("exiftool недоступен"), 0.0, None, true, true);
+        let editor = crate::ui::textedit::TextEdit::new();
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", None, &search, 0.0, Some("exiftool недоступен"), 0.0, None, true, true, &empty_edit(&editor));
         let has_err = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text.contains("недоступен")));
         assert!(has_err);
     }
@@ -781,12 +921,17 @@ mod tests {
         let search = crate::ui::textedit::TextEdit::new();
         let p = crate::ui::layout::popup_layout(win, 1.0);
         // прокрутка на половину строки — первая строка частично уезжает за верх тела
-        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 13.0, None, 0.0, None, true, true);
+        let editor = crate::ui::textedit::TextEdit::new();
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 13.0, None, 0.0, None, true, true, &empty_edit(&editor));
         // строки тела несут clip и не выходят за пределы body (не лезут на поиск/под карточку)
         let clipped = cmds.iter().filter(|c| matches!(c, DrawCmd::Text { clip: Some(_), .. })).count();
         assert!(clipped > 0, "у строк тела должен быть clip");
         for c in &cmds {
             if let DrawCmd::Text { clip: Some(cl), .. } = c {
+                // футерные кнопки клипуются к себе (в футере, ниже тела) — проверяем только клипы тела
+                if cl.y >= p.body.y + p.body.h {
+                    continue;
+                }
                 assert!(cl.y >= p.body.y - 0.01, "clip не должен заходить выше body_top");
                 assert!(cl.y + cl.h <= p.body.y + p.body.h + 0.01, "и ниже body_bot");
             }
