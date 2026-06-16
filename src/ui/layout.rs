@@ -91,39 +91,50 @@ pub fn compute(win: Vec2, scale: f32, bottom_factor: f32, fullscreen: bool) -> U
     }
 }
 
+/// Физическая ширина миниатюры по аспекту фото (высота фиксирована).
+/// `ar` ≤ 0 трактуется как плейсхолдер (фото ещё не загружено).
+pub fn thumb_width(ar: f32, scale: f32) -> f32 {
+    let ar = if ar > 0.0 { ar } else { theme::THUMB_DEFAULT_AR };
+    let ar = ar.clamp(theme::THUMB_MIN_AR, theme::THUMB_MAX_AR);
+    theme::THUMB_H * ar * scale
+}
+
 /// Прямоугольники видимых миниатюр карусели: (индекс, rect в физ. px).
-/// `scroll` — горизонтальное смещение в физ. px.
+/// `aspects[i]` — аспект (ширина/высота) i-й миниатюры (≤0 = плейсхолдер).
+/// Количество миниатюр = `aspects.len()`. `scroll` — смещение в физ. px.
 pub fn carousel_thumb_rects(
     carousel: Rect,
-    count: usize,
+    aspects: &[f32],
     scroll: f32,
     scale: f32,
 ) -> Vec<(usize, Rect)> {
-    let tw = theme::THUMB_W * scale;
     let th = theme::THUMB_H * scale;
     let gap = theme::THUMB_GAP * scale;
     let pad = theme::CAROUSEL_PAD * scale;
     let y = carousel.y + (carousel.h - th) * 0.5;
     let mut out = Vec::new();
-    for i in 0..count {
-        let x = carousel.x + pad - scroll + i as f32 * (tw + gap);
+    let mut x = carousel.x + pad - scroll;
+    for (i, &ar) in aspects.iter().enumerate() {
+        let tw = thumb_width(ar, scale);
         // включаем только пересекающие зону карусели по горизонтали
         if x + tw > carousel.x && x < carousel.x + carousel.w {
             out.push((i, Rect { x, y, w: tw, h: th }));
         }
+        x += tw + gap;
     }
     out
 }
 
 /// Полная ширина содержимого карусели (для clamp скролла), физ. px.
-pub fn carousel_content_width(count: usize, scale: f32) -> f32 {
-    if count == 0 {
+pub fn carousel_content_width(aspects: &[f32], scale: f32) -> f32 {
+    let n = aspects.len();
+    if n == 0 {
         return 0.0;
     }
-    let tw = theme::THUMB_W * scale;
     let gap = theme::THUMB_GAP * scale;
     let pad = theme::CAROUSEL_PAD * scale;
-    pad * 2.0 + count as f32 * tw + (count.saturating_sub(1)) as f32 * gap
+    let sum: f32 = aspects.iter().map(|&ar| thumb_width(ar, scale)).sum();
+    pad * 2.0 + sum + (n - 1) as f32 * gap
 }
 
 #[cfg(test)]
@@ -162,10 +173,10 @@ mod tests {
     #[test]
     fn bottom_zones_layout() {
         let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
-        assert_eq!(l.meta.w, 110.0);
+        assert_eq!(l.meta.w, 132.0);
         assert_eq!(l.meta.x, 0.0);
-        assert_eq!(l.carousel.x, 110.0);
-        assert_eq!(l.carousel.w, 1280.0 - 110.0 - 76.0);
+        assert_eq!(l.carousel.x, 132.0);
+        assert_eq!(l.carousel.w, 1280.0 - 132.0 - 76.0);
         // две кнопки по 38 в правой зоне 76
         assert_eq!(l.btn_fullscreen.x, 1280.0 - 76.0);
         assert_eq!(l.btn_fullscreen.w, 38.0);
@@ -189,11 +200,13 @@ mod tests {
     #[test]
     fn carousel_thumbs_positions_and_visibility() {
         let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
-        let rects = carousel_thumb_rects(l.carousel, 100, 0.0, 1.0);
+        let aspects = vec![1.5_f32; 100]; // дефолт-аспект → ширина 64*1.5 = 96
+        let rects = carousel_thumb_rects(l.carousel, &aspects, 0.0, 1.0);
         // первая миниатюра: x = carousel.x + pad
         assert_eq!(rects[0].0, 0);
         assert_eq!(rects[0].1.x, l.carousel.x + 10.0);
-        assert_eq!(rects[0].1.w, 62.0);
+        assert_eq!(rects[0].1.w, 96.0);
+        assert_eq!(rects[0].1.h, 64.0);
         // далеко за правым краем — не входят (видимых заметно меньше 100)
         assert!(rects.len() < 100);
     }
@@ -201,20 +214,33 @@ mod tests {
     #[test]
     fn carousel_scroll_shifts_left() {
         let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
-        let a = carousel_thumb_rects(l.carousel, 100, 0.0, 1.0);
-        let b = carousel_thumb_rects(l.carousel, 100, 68.0, 1.0); // tw+gap = 68
+        let aspects = vec![1.5_f32; 100];
+        let a = carousel_thumb_rects(l.carousel, &aspects, 0.0, 1.0);
+        let b = carousel_thumb_rects(l.carousel, &aspects, 102.0, 1.0); // tw+gap = 96+6
         // при скролле на один шаг индекс 1 встаёт примерно туда, где был индекс 0
         assert!((b.iter().find(|(i, _)| *i == 1).unwrap().1.x - a[0].1.x).abs() < 0.01);
     }
 
     #[test]
+    fn variable_width_by_aspect() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        // ландшафт (2.0) шире портрета (0.6)
+        let aspects = vec![2.0_f32, 0.6_f32];
+        let rects = carousel_thumb_rects(l.carousel, &aspects, 0.0, 1.0);
+        assert_eq!(rects[0].1.w, 128.0); // 64 * 2.0
+        assert!((rects[1].1.w - 64.0 * 0.6).abs() < 0.01);
+        // второй сдвинут на ширину первого + gap
+        assert!((rects[1].1.x - (rects[0].1.x + 128.0 + 6.0)).abs() < 0.01);
+    }
+
+    #[test]
     fn content_width_grows_with_count() {
-        assert_eq!(carousel_content_width(0, 1.0), 0.0);
-        let w1 = carousel_content_width(1, 1.0);
-        let w2 = carousel_content_width(2, 1.0);
+        assert_eq!(carousel_content_width(&[], 1.0), 0.0);
+        let w1 = carousel_content_width(&[1.5], 1.0);
+        let w2 = carousel_content_width(&[1.5, 1.5], 1.0);
         assert!(w2 > w1);
-        // 1 миниатюра: pad*2 + tw = 20 + 62 = 82
-        assert_eq!(w1, 82.0);
+        // 1 миниатюра: pad*2 + tw = 20 + 96 = 116
+        assert_eq!(w1, 116.0);
     }
 
     #[test]

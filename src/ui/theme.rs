@@ -15,12 +15,18 @@ pub const DIVIDER_HEIGHT: f32 = 22.0;
 /// Высота bottom bar при полной видимости (логические px).
 pub const BOTTOM_BAR_HEIGHT: f32 = 84.0;
 /// Ширина левой мета-зоны bottom bar (логические px).
-pub const META_WIDTH: f32 = 110.0;
+pub const META_WIDTH: f32 = 132.0;
 /// Ширина правой зоны кнопок действий (логические px).
 pub const ACTIONS_WIDTH: f32 = 76.0;
-/// Размер миниатюры карусели (логические px).
-pub const THUMB_W: f32 = 62.0;
+/// Высота миниатюры карусели (логические px). Ширина — по аспекту фото.
 pub const THUMB_H: f32 = 64.0;
+/// Аспект-плейсхолдер до загрузки (ширина = высота × AR) и пределы аспекта,
+/// чтобы панорамы/узкие кадры не ломали ленту.
+pub const THUMB_DEFAULT_AR: f32 = 1.5;
+pub const THUMB_MIN_AR: f32 = 0.5;
+pub const THUMB_MAX_AR: f32 = 2.4;
+/// Толщина рамки активной миниатюры (логические px).
+pub const THUMB_BORDER: f32 = 2.0;
 /// Скругление миниатюры и зазор между ними (логические px).
 pub const THUMB_RADIUS: f32 = 4.0;
 pub const THUMB_GAP: f32 = 6.0;

@@ -28,6 +28,8 @@ pub struct Renderer {
     titlebar_h: f32,
     /// Высота нижнего хрома divider+bottom_bar (физ. px); 0 в fullscreen.
     bottom_chrome_h: f32,
+    /// Зона клипа миниатюр (карусель), физ. px.
+    thumb_clip: Rect,
 }
 
 impl Renderer {
@@ -37,7 +39,13 @@ impl Renderer {
         let ui = UiPipeline::new(&ctx.device, ctx.config.format);
         let text = TextLayer::new(&ctx.device, &ctx.queue, ctx.config.format);
         let thumbs = ThumbnailLayer::new(&ctx.device, ctx.config.format);
-        Ok(Self { ctx, blit, ui, text, thumbs, image_size: None, titlebar_h: 0.0, bottom_chrome_h: 0.0 })
+        Ok(Self {
+            ctx, blit, ui, text, thumbs,
+            image_size: None,
+            titlebar_h: 0.0,
+            bottom_chrome_h: 0.0,
+            thumb_clip: Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 },
+        })
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -60,6 +68,11 @@ impl Renderer {
 
     pub fn set_bottom_chrome_height(&mut self, h: f32) {
         self.bottom_chrome_h = h;
+    }
+
+    /// Зона клипа миниатюр (карусель). Вне её миниатюры не рисуются.
+    pub fn set_thumb_clip(&mut self, clip: Rect) {
+        self.thumb_clip = clip;
     }
 
     pub fn image_size(&self) -> Option<Vec2> {
@@ -145,8 +158,18 @@ impl Renderer {
                 self.blit.draw(&self.ctx.queue, &mut pass, view, self.image_size, viewer);
                 pass.set_viewport(0.0, 0.0, screen[0], screen[1], 0.0, 1.0);
             }
-            // 2) миниатюры (на весь экран, по своим rect'ам)
-            self.thumbs.draw(&self.ctx.queue, &mut pass, thumb_scale, thumb_rects);
+            // 2) миниатюры — клипуются зоной карусели (scissor), иначе при сворачивании
+            //    bottom bar они вылезали бы в viewer/углы.
+            let cx = self.thumb_clip.x.max(0.0).min(screen[0]);
+            let cy = self.thumb_clip.y.max(0.0).min(screen[1]);
+            let cw = (self.thumb_clip.x + self.thumb_clip.w).min(screen[0]) - cx;
+            let ch = (self.thumb_clip.y + self.thumb_clip.h).min(screen[1]) - cy;
+            if cw >= 1.0 && ch >= 1.0 {
+                pass.set_scissor_rect(cx as u32, cy as u32, cw as u32, ch as u32);
+                self.thumbs.draw(&self.ctx.queue, &mut pass, thumb_scale, thumb_rects);
+                // вернуть scissor на весь экран для UI/текста
+                pass.set_scissor_rect(0, 0, self.ctx.config.width, self.ctx.config.height);
+            }
             // 3) UI-прямоугольники
             self.ui.draw(&mut pass);
             // 4) текст

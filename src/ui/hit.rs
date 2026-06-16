@@ -85,12 +85,12 @@ pub fn hit(layout: &UiLayout, win: Vec2, cursor: Vec2, scale: f32) -> Region {
 /// Индекс миниатюры под курсором, если попал по одной из видимых.
 pub fn hit_thumbnail(
     carousel: crate::ui::layout::Rect,
-    count: usize,
+    aspects: &[f32],
     scroll: f32,
     scale: f32,
     cursor: Vec2,
 ) -> Option<usize> {
-    for (i, r) in crate::ui::layout::carousel_thumb_rects(carousel, count, scroll, scale) {
+    for (i, r) in crate::ui::layout::carousel_thumb_rects(carousel, aspects, scroll, scale) {
         if r.contains(cursor) {
             return Some(i);
         }
@@ -184,12 +184,13 @@ mod tests {
     #[test]
     fn thumbnail_hit_by_index() {
         let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        let aspects = vec![1.5_f32; 100];
         // центр первой миниатюры
-        let first = crate::ui::layout::carousel_thumb_rects(l.carousel, 100, 0.0, 1.0)[0].1;
+        let first = crate::ui::layout::carousel_thumb_rects(l.carousel, &aspects, 0.0, 1.0)[0].1;
         let c = Vec2::new(first.x + 31.0, first.y + 32.0);
-        assert_eq!(hit_thumbnail(l.carousel, 100, 0.0, 1.0, c), Some(0));
+        assert_eq!(hit_thumbnail(l.carousel, &aspects, 0.0, 1.0, c), Some(0));
         // мимо карусели
-        assert_eq!(hit_thumbnail(l.carousel, 100, 0.0, 1.0, Vec2::new(0.0, 0.0)), None);
+        assert_eq!(hit_thumbnail(l.carousel, &aspects, 0.0, 1.0, Vec2::new(0.0, 0.0)), None);
     }
 
     #[test]

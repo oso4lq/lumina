@@ -49,32 +49,25 @@ pub struct FileMeta {
     pub bytes: u64,
 }
 
-/// Строки мета-панели: (label, value).
-pub fn meta_lines(m: &FileMeta) -> Vec<(String, String)> {
+/// Строки мета-панели (без заголовков, в столбик): формат, разрешение, размер файла.
+/// Напр.: ["JPG", "1920×1280px", "12.4MB"].
+pub fn meta_lines(m: &FileMeta) -> Vec<String> {
     vec![
-        ("ФОРМАТ".to_string(), m.format_label.clone()),
-        (
-            "РАЗМЕР".to_string(),
-            format!(
-                "{:.1} MP\n{} × {}\n{}",
-                m.megapixels,
-                m.width,
-                m.height,
-                humanize_bytes(m.bytes)
-            ),
-        ),
+        m.format_label.clone(),
+        format!("{}×{}px", m.width, m.height),
+        humanize_bytes(m.bytes),
     ]
 }
 
-/// Размер в байтах → человекочитаемо ("38.4 МБ").
+/// Размер в байтах → человекочитаемо ("12.4MB").
 pub fn humanize_bytes(bytes: u64) -> String {
     let b = bytes as f64;
     if b >= 1024.0 * 1024.0 {
-        format!("{:.1} МБ", b / (1024.0 * 1024.0))
+        format!("{:.1}MB", b / (1024.0 * 1024.0))
     } else if b >= 1024.0 {
-        format!("{:.1} КБ", b / 1024.0)
+        format!("{:.1}KB", b / 1024.0)
     } else {
-        format!("{} Б", bytes)
+        format!("{}B", bytes)
     }
 }
 
@@ -173,50 +166,37 @@ pub fn build(
         h: grip_h,
     };
     cmds.push(DrawCmd::Rect { rect: grip, color: theme.divider_grip, radius: grip_h * 0.5 });
-    // метка «карусель» слева с альфой по bottom_factor
-    let mut label_color = theme.text_secondary;
-    label_color[3] = state.bottom_factor;
-    cmds.push(DrawCmd::Text {
-        rect: Rect { x: layout.divider.x + 12.0 * scale, y: layout.divider.y, w: 120.0 * scale, h: layout.divider.h },
-        text: "карусель".to_string(),
-        size: theme::META_LABEL_SIZE * scale,
-        color: label_color,
-        align: Align::Left,
-    });
 
     // --- Bottom bar (если хоть немного видим) ---
     if state.bottom_factor > 0.0 {
         cmds.push(DrawCmd::Rect { rect: layout.bottom_bar, color: theme.bg_surface, radius: 0.0 });
 
-        // Мета-панель
+        // Мета-панель: формат / разрешение / размер — в столбик, без заголовков.
         if let Some(meta) = &state.meta {
-            let mut y = layout.meta.y + 10.0 * scale;
-            for (label, value) in meta_lines(meta) {
+            let line_h = theme::META_VALUE_SIZE * scale * 1.55;
+            let mut y = layout.meta.y + 12.0 * scale;
+            for value in meta_lines(meta) {
                 cmds.push(DrawCmd::Text {
-                    rect: Rect { x: layout.meta.x + 12.0 * scale, y, w: layout.meta.w - 16.0 * scale, h: theme::META_LABEL_SIZE * scale * 1.4 },
-                    text: label,
-                    size: theme::META_LABEL_SIZE * scale,
-                    color: theme.text_secondary,
-                    align: Align::Left,
-                });
-                y += theme::META_LABEL_SIZE * scale * 1.6;
-                // значение может быть многострочным (\n) — glyphon разложит по высоте rect
-                let lines = value.matches('\n').count() as f32 + 1.0;
-                cmds.push(DrawCmd::Text {
-                    rect: Rect { x: layout.meta.x + 12.0 * scale, y, w: layout.meta.w - 16.0 * scale, h: theme::META_VALUE_SIZE * scale * 1.3 * lines },
+                    rect: Rect { x: layout.meta.x + 12.0 * scale, y, w: layout.meta.w - 14.0 * scale, h: line_h },
                     text: value,
                     size: theme::META_VALUE_SIZE * scale,
                     color: theme.text_primary,
                     align: Align::Left,
                 });
-                y += theme::META_VALUE_SIZE * scale * 1.3 * lines + 6.0 * scale;
+                y += line_h;
             }
         }
 
-        // Активная рамка и бейджи поверх миниатюр
+        // Активная рамка (контур, не заливка — иначе перекрыла бы фото) и бейджи поверх миниатюр
         for (idx, r) in thumb_rects {
             if *idx == state.active_index {
-                cmds.push(DrawCmd::Rect { rect: *r, color: theme.active_border, radius: theme::THUMB_RADIUS * scale });
+                let t = theme::THUMB_BORDER * scale;
+                let c = theme.active_border;
+                // четыре тонких прямоугольника по краям миниатюры
+                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x, y: r.y, w: r.w, h: t }, color: c, radius: 0.0 });
+                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x, y: r.y + r.h - t, w: r.w, h: t }, color: c, radius: 0.0 });
+                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x, y: r.y, w: t, h: r.h }, color: c, radius: 0.0 });
+                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x + r.w - t, y: r.y, w: t, h: r.h }, color: c, radius: 0.0 });
             }
             if raw_flags.get(*idx).copied().unwrap_or(false) {
                 // бейдж формата в правом нижнем углу — фон + текст
@@ -256,7 +236,8 @@ mod tests {
         let mut state = UiState::new();
         state.title = "a.jpg · Lumina".into();
         f(&mut state);
-        let thumbs = crate::ui::layout::carousel_thumb_rects(layout.carousel, state.thumb_count, state.scroll, 1.0);
+        let aspects = vec![1.5_f32; state.thumb_count];
+        let thumbs = crate::ui::layout::carousel_thumb_rects(layout.carousel, &aspects, state.scroll, 1.0);
         let raw: Vec<bool> = (0..state.thumb_count).map(|i| i % 2 == 0).collect();
         build(&state, &layout, &theme, 1.0, &thumbs, &raw)
     }
@@ -299,12 +280,13 @@ mod tests {
     #[test]
     fn hidden_bottom_keeps_divider_no_bar_bg() {
         let cmds = fixture(|s| { s.bottom_factor = 0.0; s.bottom_visible = false; });
-        // divider фон есть, bottom bar фон — нет
+        // bottom bar фон (высота 84) отсутствует
         let bar_bg = cmds.iter().any(|c| matches!(c, DrawCmd::Rect { rect, .. } if rect.h == 84.0));
         assert!(!bar_bg);
-        // метка «карусель» присутствует (divider всегда)
-        let label = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "карусель"));
-        assert!(label);
+        // divider всегда виден — присутствует грип (его цвет)
+        let theme = ThemePalette::dark();
+        let grip = cmds.iter().any(|c| matches!(c, DrawCmd::Rect { color, .. } if *color == theme.divider_grip));
+        assert!(grip);
     }
 
     #[test]
@@ -319,16 +301,15 @@ mod tests {
     fn meta_lines_format() {
         let m = FileMeta { format_label: "RAF · RAW".into(), megapixels: 40.23, width: 7728, height: 5200, bytes: 40_265_318 };
         let lines = meta_lines(&m);
-        assert_eq!(lines[0], ("ФОРМАТ".to_string(), "RAF · RAW".to_string()));
-        assert!(lines[1].1.contains("40.2 MP"));
-        assert!(lines[1].1.contains("7728 × 5200"));
-        assert!(lines[1].1.contains("МБ"));
+        assert_eq!(lines[0], "RAF · RAW");
+        assert_eq!(lines[1], "7728×5200px");
+        assert!(lines[2].contains("MB"));
     }
 
     #[test]
     fn humanize_bytes_units() {
-        assert_eq!(humanize_bytes(512), "512 Б");
-        assert!(humanize_bytes(2048).contains("КБ"));
-        assert!(humanize_bytes(5 * 1024 * 1024).contains("МБ"));
+        assert_eq!(humanize_bytes(512), "512B");
+        assert!(humanize_bytes(2048).contains("KB"));
+        assert!(humanize_bytes(5 * 1024 * 1024).contains("MB"));
     }
 }

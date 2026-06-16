@@ -54,6 +54,7 @@ pub struct AppState {
     pub thumbs: ThumbnailStore,
     pub raw_flags: Vec<bool>,      // для бейджей: RAW-файл по индексу каталога
     pub badge_labels: Vec<String>, // текст бейджа (расширение в верхнем регистре)
+    pub thumb_aspects: Vec<f32>,   // аспект (w/h) миниатюры по индексу; дефолт до загрузки
 }
 
 impl AppState {
@@ -75,6 +76,7 @@ impl AppState {
             thumbs: ThumbnailStore::new(256),
             raw_flags: Vec::new(),
             badge_labels: Vec::new(),
+            thumb_aspects: Vec::new(),
         }
     }
 }
@@ -119,6 +121,7 @@ impl App {
             let n = files.len();
             self.state.ui.thumb_count = n;
             self.state.ui.active_index = cat.current_index();
+            self.state.thumb_aspects = vec![theme::THUMB_DEFAULT_AR; n];
             self.state.raw_flags = files
                 .iter()
                 .map(|p| RawDecoder::supports(&crate::decoder::ext_lower(p)))
@@ -266,7 +269,6 @@ impl App {
         }
         let generation = self.state.thumbs.generation;
         let scale = self.state.scale;
-        let tw = (crate::ui::theme::THUMB_W * scale).round() as u32;
         let th = (crate::ui::theme::THUMB_H * scale).round() as u32;
         for index in pending {
             let Some(path) = catalog.files().get(index) else { continue };
@@ -284,24 +286,25 @@ impl App {
                     let _ = proxy.send_event(UserEvent::Thumbnail { generation, index, rgba: Vec::new(), w: 0, h: 0 });
                     return;
                 };
-                let (rgba, w, h) = crate::app::make_thumb(&img.rgba, img.width, img.height, tw, th);
+                let (rgba, w, h) = crate::app::make_thumb(&img.rgba, img.width, img.height, th);
                 let _ = proxy.send_event(UserEvent::Thumbnail { generation, index, rgba, w, h });
             });
         }
     }
 }
 
-/// Cover-кроп исходного RGBA и ресайз до tw×th. Возвращает (rgba, tw, th).
-pub fn make_thumb(src: &[u8], sw: u32, sh: u32, tw: u32, th: u32) -> (Vec<u8>, u32, u32) {
+/// Ресайз исходного RGBA до высоты `th` с сохранением аспекта (без кропа).
+/// Возвращает (rgba, tw, th), где tw = round(th × аспект).
+pub fn make_thumb(src: &[u8], sw: u32, sh: u32, th: u32) -> (Vec<u8>, u32, u32) {
     use image::{imageops, RgbaImage};
-    let tw = tw.max(1);
     let th = th.max(1);
+    let ar = if sh > 0 { sw as f32 / sh as f32 } else { crate::ui::theme::THUMB_DEFAULT_AR };
+    let ar = ar.clamp(crate::ui::theme::THUMB_MIN_AR, crate::ui::theme::THUMB_MAX_AR);
+    let tw = ((th as f32) * ar).round().max(1.0) as u32;
     let Some(buf) = RgbaImage::from_raw(sw, sh, src.to_vec()) else {
         return (vec![0u8; (tw * th * 4) as usize], tw, th);
     };
-    let (cx, cy, cw, ch) = crate::thumbnail::cover_crop(sw, sh, tw, th);
-    let cropped = imageops::crop_imm(&buf, cx, cy, cw, ch).to_image();
-    let resized = imageops::resize(&cropped, tw, th, imageops::FilterType::Triangle);
+    let resized = imageops::resize(&buf, tw, th, imageops::FilterType::Triangle);
     (resized.into_raw(), tw, th)
 }
 
@@ -411,6 +414,10 @@ impl ApplicationHandler<UserEvent> for App {
                     if let Some(r) = &mut self.renderer {
                         r.set_thumbnail(index, &rgba, w, h);
                     }
+                    // реальный аспект миниатюры → лента переразложится на след. кадре
+                    if let Some(a) = self.state.thumb_aspects.get_mut(index) {
+                        *a = w as f32 / h as f32;
+                    }
                 }
                 let freed = self.state.thumbs.mark_ready(index, ok);
                 if let Some(r) = &mut self.renderer {
@@ -463,7 +470,7 @@ impl ApplicationHandler<UserEvent> for App {
                 let prep = self.renderer.as_ref().map(|r| {
                     let win = r.surface_size();
                     let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
-                    let thumb_rects = layout::carousel_thumb_rects(l.carousel, self.state.ui.thumb_count, self.state.ui.scroll, self.state.scale);
+                    let thumb_rects = layout::carousel_thumb_rects(l.carousel, &self.state.thumb_aspects, self.state.ui.scroll, self.state.scale);
                     (l, thumb_rects)
                 });
                 if let Some((l, thumb_rects)) = prep {
@@ -475,6 +482,17 @@ impl ApplicationHandler<UserEvent> for App {
                     if let Some(r) = &mut self.renderer {
                         r.set_bottom_chrome_height(bottom_chrome);
                         r.set_titlebar_height(tb);
+                        // миниатюры клипуются зоной карусели (без остатков при сворачивании)
+                        r.set_thumb_clip(l.carousel);
+                        // viewer меняется при сворачивании bottom bar → фото заполняет освободившееся место
+                        if let Some(img) = r.image_size() {
+                            let z = crate::view::fit_zoom(r.viewer_size(), img);
+                            self.state.view.set_min_zoom(z);
+                            if self.state.view.is_fit() {
+                                self.state.view.set_zoom_immediate(z);
+                                self.state.view.set_pan(glam::Vec2::ZERO);
+                            }
+                        }
                         let ready: Vec<(usize, crate::ui::layout::Rect)> = thumb_rects.iter().filter(|(i, _)| r.has_thumbnail(*i)).copied().collect();
                         if let Err(e) = r.render(&self.state.view, &cmds, &ready) { log::warn!("render: {e}"); }
                     }
@@ -527,7 +545,7 @@ impl ApplicationHandler<UserEvent> for App {
                 if over_carousel {
                     // горизонтальный скролл карусели
                     let step = 60.0 * self.state.scale;
-                    let content = crate::ui::layout::carousel_content_width(self.state.ui.thumb_count, self.state.scale);
+                    let content = crate::ui::layout::carousel_content_width(&self.state.thumb_aspects, self.state.scale);
                     let view_w = self.renderer.as_ref().map(|r| {
                         let win = r.surface_size();
                         layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen).carousel.w
@@ -585,7 +603,7 @@ impl ApplicationHandler<UserEvent> for App {
                                         return;
                                     }
                                     hit::Region::Carousel | hit::Region::Thumbnail(_) => {
-                                        if let Some(idx) = hit::hit_thumbnail(l.carousel, self.state.ui.thumb_count, self.state.ui.scroll, self.state.scale, self.state.cursor) {
+                                        if let Some(idx) = hit::hit_thumbnail(l.carousel, &self.state.thumb_aspects, self.state.ui.scroll, self.state.scale, self.state.cursor) {
                                             self.navigate_to(idx);
                                         }
                                         return;
