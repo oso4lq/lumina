@@ -35,6 +35,9 @@ pub struct UiLayout {
     /// Кнопки оверлейного тулбара fullscreen (нулевые вне fullscreen).
     pub btn_fs_play: Rect,
     pub btn_fs_exit: Rect,
+    /// Тонкие полосы навигации у краёв viewer (нулевые в fullscreen).
+    pub nav_prev: Rect,
+    pub nav_next: Rect,
 }
 
 /// Пустой прямоугольник.
@@ -67,6 +70,8 @@ pub fn compute(win: Vec2, scale: f32, bottom_factor: f32, fullscreen: bool) -> U
             btn_exif: ZERO,
             btn_fs_play: Rect { x: play_x, y, w: b, h: b },
             btn_fs_exit: Rect { x: exit_x, y, w: b, h: b },
+            nav_prev: ZERO,
+            nav_next: ZERO,
         };
     }
 
@@ -100,11 +105,16 @@ pub fn compute(win: Vec2, scale: f32, bottom_factor: f32, fullscreen: bool) -> U
     let btn_fullscreen = Rect { x: actions_x + third, y: bottom_bar.y, w: third, h: bottom_h };
     let btn_exif = Rect { x: actions_x + 2.0 * third, y: bottom_bar.y, w: third, h: bottom_h };
 
+    let nav_w = theme::NAV_ARROW_W * scale;
+    let nav_prev = Rect { x: 0.0, y: viewer.y, w: nav_w, h: viewer.h };
+    let nav_next = Rect { x: win.x - nav_w, y: viewer.y, w: nav_w, h: viewer.h };
+
     UiLayout {
         titlebar, btn_min, btn_max, btn_close, title, viewer,
         divider, bottom_bar, meta, carousel,
         btn_rotate, btn_fullscreen, btn_exif,
         btn_fs_play: ZERO, btn_fs_exit: ZERO,
+        nav_prev, nav_next,
     }
 }
 
@@ -185,6 +195,26 @@ mod tests {
         assert_eq!(l.divider, ZERO);
         assert_eq!(l.bottom_bar, ZERO);
         assert_eq!(l.viewer, Rect { x: 0.0, y: 0.0, w: 1280.0, h: 800.0 });
+    }
+
+    #[test]
+    fn nav_arrows_geometry_windowed() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        assert_eq!(l.nav_prev.x, 0.0);
+        assert_eq!(l.nav_prev.w, 44.0);
+        assert_eq!(l.nav_prev.y, l.viewer.y);
+        assert_eq!(l.nav_prev.h, l.viewer.h);
+        assert_eq!(l.nav_next.x, 1280.0 - 44.0);
+        assert_eq!(l.nav_next.w, 44.0);
+        assert_eq!(l.nav_next.y, l.viewer.y);
+        assert_eq!(l.nav_next.h, l.viewer.h);
+    }
+
+    #[test]
+    fn nav_arrows_zero_in_fullscreen() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, true);
+        assert_eq!(l.nav_prev, ZERO);
+        assert_eq!(l.nav_next, ZERO);
     }
 
     #[test]

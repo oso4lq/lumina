@@ -18,6 +18,10 @@ pub const BOTTOM_BAR_HEIGHT: f32 = 84.0;
 pub const META_WIDTH: f32 = 132.0;
 /// Ширина правой зоны кнопок действий (логические px). 3 кнопки: поворот/fullscreen/инфо.
 pub const ACTIONS_WIDTH: f32 = 114.0;
+/// Ширина (толщина) экранной стрелки навигации — тонкая полоса у края viewer (логические px).
+pub const NAV_ARROW_W: f32 = 44.0;
+/// Кегль глифа-шеврона стрелки (логические px).
+pub const NAV_CHEVRON_SIZE: f32 = 20.0;
 /// Размер кнопки оверлейного тулбара fullscreen (логические px).
 pub const FS_BUTTON: f32 = 44.0;
 /// Отступ оверлея fullscreen от края монитора и зазор между его кнопками (логические px).
