@@ -21,8 +21,10 @@ pub fn exiftool_path() -> PathBuf {
 
 /// Прочитать все теги файла. Группированный JSON exiftool → ExifTags.
 pub fn read_tags(path: &Path) -> Result<ExifTags> {
+    // `--` завершает разбор опций: путь трактуется строго как позиционный аргумент,
+    // даже если имя файла начинается с `-` (защита от подмены флагов).
     let out = Command::new(exiftool_path())
-        .args(["-json", "-G", "-struct"])
+        .args(["-json", "-G", "-struct", "--"])
         .arg(path)
         .output()
         .map_err(|e| LuminaError::Exif(path.to_path_buf(), format!("запуск exiftool: {e}")))?;
