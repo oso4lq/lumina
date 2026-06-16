@@ -31,6 +31,8 @@ pub enum Region {
     ActionExif,
     FullscreenExit,
     SlideshowPlay,
+    NavPrev,
+    NavNext,
 }
 
 /// Ширина зоны захвата для ресайза у краёв окна (логические px).
@@ -91,6 +93,12 @@ pub fn hit(layout: &UiLayout, win: Vec2, cursor: Vec2, scale: f32) -> Region {
     }
     if layout.carousel.contains(cursor) {
         return Region::Carousel;
+    }
+    if layout.nav_prev.contains(cursor) {
+        return Region::NavPrev;
+    }
+    if layout.nav_next.contains(cursor) {
+        return Region::NavNext;
     }
     Region::None
 }
@@ -210,6 +218,29 @@ mod tests {
     fn viewer_still_none() {
         let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
         assert_eq!(hit(&l, Vec2::new(1280.0, 800.0), Vec2::new(640.0, 300.0), 1.0), Region::None);
+    }
+
+    #[test]
+    fn nav_prev_region() {
+        let win = Vec2::new(1280.0, 800.0);
+        let l = compute(win, 1.0, 1.0, false);
+        // левая полоса, ниже titlebar, не в крайних 6px ресайза
+        assert_eq!(hit(&l, win, Vec2::new(20.0, 400.0), 1.0), Region::NavPrev);
+    }
+
+    #[test]
+    fn nav_next_region() {
+        let win = Vec2::new(1280.0, 800.0);
+        let l = compute(win, 1.0, 1.0, false);
+        assert_eq!(hit(&l, win, Vec2::new(1280.0 - 20.0, 400.0), 1.0), Region::NavNext);
+    }
+
+    #[test]
+    fn resize_edge_priority_over_nav() {
+        let win = Vec2::new(1280.0, 800.0);
+        let l = compute(win, 1.0, 1.0, false);
+        // крайние 6px → ресайз, не NavPrev
+        assert_eq!(hit(&l, win, Vec2::new(2.0, 400.0), 1.0), Region::Resize(Edge::Left));
     }
 
     #[test]
