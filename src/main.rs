@@ -2,6 +2,7 @@ mod app;
 mod catalog;
 mod decoder;
 mod error;
+mod exif;
 mod input;
 mod platform;
 mod renderer;

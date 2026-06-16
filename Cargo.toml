@@ -20,6 +20,7 @@ thiserror  = "1"
 log        = "0.4"
 env_logger = "0.11"
 glyphon    = "0.6"               # рендер текста поверх wgpu (cosmic-text)
+kamadak-exif = "0.5"             # чтение EXIF Orientation (pure-Rust)
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
