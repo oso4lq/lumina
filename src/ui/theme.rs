@@ -38,6 +38,11 @@ pub const POPUP_GROUP_SIZE: f32 = 11.0;
 pub const POPUP_RADIUS: f32 = 10.0;
 pub const POPUP_CARET_W: f32 = 1.5;       // ширина каретки поиска (логические px)
 pub const POPUP_CARET_BLINK: f32 = 0.53;  // полупериод мигания каретки (сек)
+/// Футер popup (логические px) — кнопки Сохранить/Отменить всегда внизу карточки.
+pub const POPUP_FOOTER_H: f32 = 46.0;
+/// Размер иконок-действий строки (✎/✕) и кнопок футера — текст (логические px).
+pub const POPUP_ACTION_ICON: f32 = 13.0;
+pub const POPUP_BTN_SIZE: f32 = 12.0;   // кегль текста кнопок футера
 
 /// Полупрозрачное затемнение фона под popup (линейное пространство, alpha не зависит от srgb).
 pub const POPUP_DIM: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
@@ -102,6 +107,12 @@ pub struct ThemePalette {
     pub popup_field_bg: [f32; 4],
     /// Подсветка выделения текста в поле поиска.
     pub selection_bg: [f32; 4],
+    /// Акцент активной кнопки Save (фон).
+    pub save_bg: [f32; 4],
+    /// Опасное действие (delete/✕) — цвет иконки.
+    pub danger: [f32; 4],
+    /// Маркер изменённого значения (pending Set) — цвет текста.
+    pub pending_mark: [f32; 4],
 }
 
 impl ThemePalette {
@@ -122,6 +133,9 @@ impl ThemePalette {
             popup_group_bg: rgba(0xff, 0xff, 0xff, 0.08),
             popup_field_bg: rgba(0x2a, 0x2a, 0x30, 1.0),
             selection_bg: rgba(0x4a, 0x9e, 0xff, 0.35),
+            save_bg: rgba(0x2f, 0x6f, 0xd6, 1.0),
+            danger: rgba(0xe0, 0x5a, 0x4a, 1.0),
+            pending_mark: rgba(0x6f, 0xb0, 0x6f, 1.0),
         }
     }
 }
