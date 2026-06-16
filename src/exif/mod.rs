@@ -37,13 +37,17 @@ pub fn read_orientation(path: &Path) -> Orientation {
     let Ok(file) = std::fs::File::open(path) else {
         return Orientation::Normal;
     };
-    let mut reader = std::io::BufReader::new(&file);
+    let mut reader = std::io::BufReader::new(file);
     let exif_reader = ::exif::Reader::new();
     let Ok(exif_data) = exif_reader.read_from_container(&mut reader) else {
         return Orientation::Normal;
     };
     match exif_data.get_field(::exif::Tag::Orientation, ::exif::In::PRIMARY) {
-        Some(f) => Orientation::from_exif_u16(f.value.get_uint(0).unwrap_or(1) as u16),
+        // Orientation — SHORT-тег со значениями 1..=8; u32→u16 без потерь.
+        Some(f) => match f.value.get_uint(0) {
+            Some(v) => Orientation::from_exif_u16(v as u16),
+            None => Orientation::Normal,
+        },
         None => Orientation::Normal,
     }
 }
