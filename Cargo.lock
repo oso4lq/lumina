@@ -2294,6 +2294,7 @@ dependencies = [
  "rawler",
  "rayon",
  "rfd",
+ "serde_json",
  "thiserror 1.0.69",
  "wgpu",
  "windows 0.58.0",

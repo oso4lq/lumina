@@ -1,3 +1,6 @@
+// pub mod read; // создаётся в Task 3
+pub mod tags;
+
 use image::DynamicImage;
 use std::path::Path;
 
