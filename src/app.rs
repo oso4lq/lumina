@@ -5,7 +5,8 @@ use crate::thumbnail::ThumbnailStore;
 use crate::ui::scene::{self, FileMeta, UiState};
 use crate::ui::theme::{self, ThemePalette};
 use crate::ui::{hit, layout};
-use crate::view::ViewTransform;
+use crate::view::{Transform, ViewTransform};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -48,6 +49,8 @@ pub struct AppState {
     pub last_cursor: glam::Vec2,
     pub last_click: Option<(std::time::Instant, glam::Vec2)>,
     pub ctrl_down: bool,
+    pub shift_down: bool,
+    pub transforms: HashMap<PathBuf, Transform>,
     pub ui: UiState,
     pub theme: ThemePalette,
     pub scale: f32,
@@ -72,6 +75,8 @@ impl AppState {
             last_cursor: glam::Vec2::ZERO,
             last_click: None,
             ctrl_down: false,
+            shift_down: false,
+            transforms: HashMap::new(),
             ui: UiState::new(),
             theme: ThemePalette::dark(),
             scale: 1.0,
@@ -111,6 +116,8 @@ impl App {
             return;
         }
         let path = catalog.current_path().to_path_buf();
+        let saved = self.state.transforms.get(&path).copied().unwrap_or_default();
+        self.state.view.set_transform(saved);
         self.state.generation += 1;
         let generation = self.state.generation;
         let proxy = self.proxy.clone();
@@ -192,7 +199,7 @@ impl App {
         let Some(r) = &self.renderer else { return };
         let Some(img) = r.image_size() else { return };
         let win = r.viewer_size();
-        let fit = crate::view::fit_zoom(win, img);
+        let fit = self.state.view.fit_zoom(win, img);
         if self.state.view.is_fit() {
             // fit → 100%
             self.state.view.set_fit(false);
@@ -210,7 +217,7 @@ impl App {
     fn set_fit_view(&mut self) {
         let Some(r) = &self.renderer else { return };
         let Some(img) = r.image_size() else { return };
-        let fit = crate::view::fit_zoom(r.viewer_size(), img);
+        let fit = self.state.view.fit_zoom(r.viewer_size(), img);
         self.state.view.set_fit(true);
         self.state.view.set_pan(glam::Vec2::ZERO);
         self.state.view.animate_zoom_to(fit);
@@ -224,6 +231,29 @@ impl App {
         if let Some(w) = &self.window { w.request_redraw(); }
     }
 
+    /// После ручной трансформации: запомнить по пути, пересчитать fit/clamp, перерисовать.
+    fn after_transform_change(&mut self) {
+        if let Some(cat) = &self.state.catalog {
+            let path = cat.current_path().to_path_buf();
+            self.state.transforms.insert(path, self.state.view.transform());
+        }
+        if let Some(r) = &self.renderer {
+            if let Some(img) = r.image_size() {
+                let win = r.viewer_size();
+                let fit = self.state.view.fit_zoom(win, img);
+                self.state.view.set_min_zoom(fit);
+                if self.state.view.is_fit() {
+                    self.state.view.set_zoom_immediate(fit);
+                    self.state.view.set_pan(glam::Vec2::ZERO);
+                }
+                self.state.view.clamp_pan(win, img);
+            }
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
     /// Открыть файл: построить каталог его папки и начать загрузку.
     pub fn open_file(&mut self, path: PathBuf) {
         match FolderCatalog::open(&path) {
@@ -232,6 +262,7 @@ impl App {
                 self.state.view = ViewTransform::new();
                 self.state.inited_generation = None;
                 self.state.thumbs.reset();
+                self.state.transforms.clear();
                 self.state.ui.scroll = 0.0;
                 self.load_current();
             }
@@ -391,7 +422,7 @@ impl ApplicationHandler<UserEvent> for App {
                             let win = r.viewer_size();
                             if self.state.inited_generation != Some(generation) {
                                 // первый кадр этой генерации → инициализация вида (как v0.1)
-                                let z = crate::view::fit_zoom(win, new_img);
+                                let z = self.state.view.fit_zoom(win, new_img);
                                 self.state.view.set_min_zoom(z);
                                 self.state.view.set_zoom_immediate(z);
                                 self.state.view.set_fit(true);
@@ -466,7 +497,7 @@ impl ApplicationHandler<UserEvent> for App {
                     r.resize(size.width, size.height);
                     if let Some(img) = r.image_size() {
                         // fit меняется с размером окна → обновляем нижнюю границу зума
-                        let z = crate::view::fit_zoom(r.viewer_size(), img);
+                        let z = self.state.view.fit_zoom(r.viewer_size(), img);
                         self.state.view.set_min_zoom(z);
                         // fit прилипает к ресайзу
                         if self.state.view.is_fit() {
@@ -527,7 +558,7 @@ impl ApplicationHandler<UserEvent> for App {
                         r.set_thumb_clip(l.carousel);
                         // viewer меняется при сворачивании bottom bar → фото заполняет освободившееся место
                         if let Some(img) = r.image_size() {
-                            let z = crate::view::fit_zoom(r.viewer_size(), img);
+                            let z = self.state.view.fit_zoom(r.viewer_size(), img);
                             self.state.view.set_min_zoom(z);
                             if self.state.view.is_fit() {
                                 self.state.view.set_zoom_immediate(z);
@@ -647,7 +678,11 @@ impl ApplicationHandler<UserEvent> for App {
                                     hit::Region::FullscreenExit if self.state.ui.fs_overlay > 0.1 => { self.toggle_fullscreen(); return; }
                                     hit::Region::SlideshowPlay if self.state.ui.fs_overlay > 0.1 => { return; } // инертна (slideshow — v0.6)
                                     hit::Region::ActionExif => { return; }    // инертна (EXIF — v0.4)
-                                    hit::Region::ActionRotate => { return; }  // инертна (поворот — v0.4)
+                                    hit::Region::ActionRotate => {
+                                        self.state.view.rotate_cw();
+                                        self.after_transform_change();
+                                        return;
+                                    }
                                     hit::Region::Divider => {
                                         self.state.ui.bottom_visible = !self.state.ui.bottom_visible;
                                         if let Some(w) = &self.window { w.request_redraw(); }
@@ -712,6 +747,25 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         _ => {}
                     }
+                    // Трансформации (без Ctrl): R/Shift+R поворот, H/V отражение.
+                    if !self.state.ctrl_down {
+                        if let Key::Character(c) = event.logical_key.as_ref() {
+                            let handled = match c {
+                                "r" | "R" => {
+                                    if self.state.shift_down { self.state.view.rotate_ccw(); }
+                                    else { self.state.view.rotate_cw(); }
+                                    true
+                                }
+                                "h" | "H" => { self.state.view.flip_horizontal(); true }
+                                "v" | "V" => { self.state.view.flip_vertical(); true }
+                                _ => false,
+                            };
+                            if handled {
+                                self.after_transform_change();
+                                return;
+                            }
+                        }
+                    }
                     let nav = match event.logical_key.as_ref() {
                         Key::Named(NamedKey::ArrowRight) => Some(crate::input::NavKey::Next),
                         Key::Named(NamedKey::ArrowLeft) => Some(crate::input::NavKey::Prev),
@@ -728,6 +782,10 @@ impl ApplicationHandler<UserEvent> for App {
                             match c {
                                 "0" => self.set_fit_view(),
                                 "1" => self.set_actual_size(),
+                                "z" | "Z" => {
+                                    self.state.view.reset_transform();
+                                    self.after_transform_change();
+                                }
                                 _ => {}
                             }
                         }
@@ -736,6 +794,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ModifiersChanged(mods) => {
                 self.state.ctrl_down = mods.state().control_key();
+                self.state.shift_down = mods.state().shift_key();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.state.scale = scale_factor as f32;
