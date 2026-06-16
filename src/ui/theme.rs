@@ -22,6 +22,24 @@ pub const ACTIONS_WIDTH: f32 = 114.0;
 pub const NAV_ARROW_W: f32 = 44.0;
 /// Кегль глифа-шеврона стрелки (логические px).
 pub const NAV_CHEVRON_SIZE: f32 = 20.0;
+
+/// EXIF popup (логические px).
+pub const POPUP_MAX_W: f32 = 560.0;
+pub const POPUP_MAX_H: f32 = 620.0;
+pub const POPUP_MARGIN: f32 = 40.0;     // минимальный зазор до краёв окна
+pub const POPUP_HEADER_H: f32 = 40.0;
+pub const POPUP_SEARCH_H: f32 = 34.0;
+pub const POPUP_ROW_H: f32 = 26.0;      // строка тега
+pub const POPUP_GROUP_H: f32 = 22.0;    // заголовок группы
+pub const POPUP_PAD: f32 = 12.0;        // внутренний горизонтальный отступ
+pub const POPUP_TITLE_SIZE: f32 = 14.0;
+pub const POPUP_ROW_SIZE: f32 = 12.0;
+pub const POPUP_GROUP_SIZE: f32 = 10.0;
+pub const POPUP_RADIUS: f32 = 10.0;
+
+/// Полупрозрачное затемнение фона под popup (линейное пространство, alpha не зависит от srgb).
+pub const POPUP_DIM: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
+
 /// Размер кнопки оверлейного тулбара fullscreen (логические px).
 pub const FS_BUTTON: f32 = 44.0;
 /// Отступ оверлея fullscreen от края монитора и зазор между его кнопками (логические px).
