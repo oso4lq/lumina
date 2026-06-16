@@ -34,8 +34,10 @@ pub const POPUP_GROUP_H: f32 = 22.0;    // заголовок группы
 pub const POPUP_PAD: f32 = 12.0;        // внутренний горизонтальный отступ
 pub const POPUP_TITLE_SIZE: f32 = 14.0;
 pub const POPUP_ROW_SIZE: f32 = 12.0;
-pub const POPUP_GROUP_SIZE: f32 = 10.0;
+pub const POPUP_GROUP_SIZE: f32 = 11.0;
 pub const POPUP_RADIUS: f32 = 10.0;
+pub const POPUP_CARET_W: f32 = 1.5;       // ширина каретки поиска (логические px)
+pub const POPUP_CARET_BLINK: f32 = 0.53;  // полупериод мигания каретки (сек)
 
 /// Полупрозрачное затемнение фона под popup (линейное пространство, alpha не зависит от srgb).
 pub const POPUP_DIM: [f32; 4] = [0.0, 0.0, 0.0, 0.55];
@@ -94,6 +96,12 @@ pub struct ThemePalette {
     pub thumb_placeholder: [f32; 4],
     pub active_border: [f32; 4],
     pub overlay_bg: [f32; 4],
+    /// Плашка-подложка заголовка группы в EXIF popup (светлее карточки).
+    pub popup_group_bg: [f32; 4],
+    /// Непрозрачная подложка поля поиска (инпут-бокс; непрозрачна, чтобы рамка фокуса была чистой).
+    pub popup_field_bg: [f32; 4],
+    /// Подсветка выделения текста в поле поиска.
+    pub selection_bg: [f32; 4],
 }
 
 impl ThemePalette {
@@ -111,6 +119,9 @@ impl ThemePalette {
             thumb_placeholder: rgba(0x26, 0x26, 0x2c, 1.0),
             active_border: rgba(0xff, 0xff, 0xff, 1.0),
             overlay_bg: rgba(0x00, 0x00, 0x00, 0.45),
+            popup_group_bg: rgba(0xff, 0xff, 0xff, 0.08),
+            popup_field_bg: rgba(0x2a, 0x2a, 0x30, 1.0),
+            selection_bg: rgba(0x4a, 0x9e, 0xff, 0.35),
         }
     }
 }

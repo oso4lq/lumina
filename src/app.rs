@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
 /// Стадия декодирования.
@@ -72,6 +72,12 @@ pub struct AppState {
     pub exif_scroll: f32,
     pub exif_error: Option<String>,
     pub exif_generation: u64,
+    /// Отсчёт фазы мигания каретки поиска (сбрасывается при открытии и вводе → каретка сразу видна).
+    pub exif_blink_since: Instant,
+    /// Видима ли каретка в последнем отрисованном кадре (гейт перерисовки по смене фазы).
+    pub exif_caret_on: bool,
+    /// Поле поиска в фокусе (каретка мигает, клавиатура идёт в поиск).
+    pub exif_focus: bool,
 }
 
 impl AppState {
@@ -106,6 +112,9 @@ impl AppState {
             exif_scroll: 0.0,
             exif_error: None,
             exif_generation: 0,
+            exif_blink_since: Instant::now(),
+            exif_caret_on: true,
+            exif_focus: false,
         }
     }
 }
@@ -287,6 +296,9 @@ impl App {
             self.state.exif_error = None;
             self.state.exif_scroll = 0.0;
             self.state.exif_search.clear();
+            self.state.exif_blink_since = Instant::now();
+            self.state.exif_caret_on = true;
+            self.state.exif_focus = true; // при открытии поле сразу в фокусе — можно печатать
             let Some(cat) = &self.state.catalog else { return };
             let path = cat.current_path().to_path_buf();
             self.state.exif_generation += 1;
@@ -493,6 +505,27 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Пока EXIF popup открыт — гоним мигание каретки: будим цикл к следующей смене фазы
+        // и перерисовываем только когда фаза перевернулась (а не каждый кадр).
+        if self.state.ui.exif_open && self.state.exif_focus {
+            let blink = (Instant::now() - self.state.exif_blink_since).as_secs_f32();
+            let visible = ((blink / crate::ui::theme::POPUP_CARET_BLINK) as u64) % 2 == 0;
+            if visible != self.state.exif_caret_on {
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
+            let into_phase = blink % crate::ui::theme::POPUP_CARET_BLINK;
+            let wait = (crate::ui::theme::POPUP_CARET_BLINK - into_phase).max(0.02);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + std::time::Duration::from_secs_f32(wait),
+            ));
+        } else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+        }
+    }
+
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Decoded { generation, stage, result } => {
@@ -682,6 +715,28 @@ impl ApplicationHandler<UserEvent> for App {
                         let filename = self.state.catalog.as_ref()
                             .and_then(|c| c.current_path().file_name().and_then(|s| s.to_str()).map(|s| s.to_string()))
                             .unwrap_or_default();
+                        // Позиция каретки/выделения поля поиска — измеряем шрифтом текстового слоя.
+                        let font_px = theme::POPUP_ROW_SIZE * self.state.scale;
+                        let chars: Vec<char> = self.state.exif_search.text().chars().collect();
+                        let caret = self.state.exif_search.caret().min(chars.len());
+                        let before: String = chars[..caret].iter().collect();
+                        let sel_strs = self.state.exif_search.selection().map(|(a, b)| {
+                            (chars[..a].iter().collect::<String>(), chars[..b].iter().collect::<String>())
+                        });
+                        let (caret_px, sel_px) = if let Some(r) = self.renderer.as_mut() {
+                            let cp = r.measure_text_width(&before, font_px);
+                            let sp = sel_strs
+                                .as_ref()
+                                .map(|(sa, sb)| (r.measure_text_width(sa, font_px), r.measure_text_width(sb, font_px)));
+                            (cp, sp)
+                        } else {
+                            (0.0, None)
+                        };
+                        // фаза мигания каретки от времени с последнего ввода/открытия (только в фокусе)
+                        let blink = (now - self.state.exif_blink_since).as_secs_f32();
+                        let phase_on = ((blink / theme::POPUP_CARET_BLINK) as u64) % 2 == 0;
+                        let caret_visible = self.state.exif_focus && phase_on;
+                        self.state.exif_caret_on = caret_visible;
                         cmds.extend(scene::build_popup(
                             r_surface_size,
                             self.state.scale,
@@ -691,6 +746,10 @@ impl ApplicationHandler<UserEvent> for App {
                             &self.state.exif_search,
                             self.state.exif_scroll,
                             self.state.exif_error.as_deref(),
+                            caret_px,
+                            sel_px,
+                            caret_visible,
+                            self.state.exif_focus,
                         ));
                     }
                     if let Some(r) = &mut self.renderer {
@@ -814,7 +873,20 @@ impl ApplicationHandler<UserEvent> for App {
                             let win = self.renderer.as_ref().map(|r| r.surface_size()).unwrap_or(glam::Vec2::ZERO);
                             match hit::hit_popup(win, self.state.scale, self.state.cursor) {
                                 hit::PopupRegion::Close | hit::PopupRegion::Outside => self.toggle_exif(),
-                                hit::PopupRegion::Search | hit::PopupRegion::Body => {}
+                                hit::PopupRegion::Search => {
+                                    // фокус поля: каретка мигает, клавиатура идёт в поиск
+                                    self.state.exif_focus = true;
+                                    self.state.exif_blink_since = Instant::now();
+                                    self.state.exif_caret_on = true;
+                                    if let Some(w) = &self.window { w.request_redraw(); }
+                                }
+                                hit::PopupRegion::Body => {
+                                    // снять фокус: каретки нет, ввод полем не воспринимается
+                                    if self.state.exif_focus {
+                                        self.state.exif_focus = false;
+                                        if let Some(w) = &self.window { w.request_redraw(); }
+                                    }
+                                }
                             }
                         }
                         return;
@@ -847,7 +919,7 @@ impl ApplicationHandler<UserEvent> for App {
                                     // оверлейные кнопки fullscreen — только пока тулбар видим
                                     hit::Region::FullscreenExit if self.state.ui.fs_overlay > 0.1 => { self.toggle_fullscreen(); return; }
                                     hit::Region::SlideshowPlay if self.state.ui.fs_overlay > 0.1 => { return; } // инертна (slideshow — v0.6)
-                                    hit::Region::ActionExif => { return; }    // инертна (EXIF — v0.4)
+                                    hit::Region::ActionExif => { self.toggle_exif(); return; }
                                     hit::Region::ActionRotate => {
                                         self.state.view.rotate_cw();
                                         self.after_transform_change();
@@ -938,12 +1010,21 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 use winit::keyboard::{Key, NamedKey, PhysicalKey};
                 if event.state.is_pressed() {
-                    // Пока EXIF popup открыт — ввод идёт в поиск; шорткаты не срабатывают.
+                    // Пока EXIF popup открыт — клавиатура поглощается модалом; ввод идёт в поиск
+                    // только когда поле в фокусе. Шорткаты приложения не срабатывают.
                     if self.state.ui.exif_open {
+                        // Esc закрывает popup независимо от фокуса поля.
+                        if let Key::Named(NamedKey::Escape) = event.logical_key.as_ref() {
+                            self.toggle_exif();
+                            return;
+                        }
+                        // Поле без фокуса — клавиатура поглощается, но в поиск не вводится.
+                        if !self.state.exif_focus {
+                            return;
+                        }
                         let shift = self.state.shift_down;
                         let mut handled = true;
                         match event.logical_key.as_ref() {
-                            Key::Named(NamedKey::Escape) => { self.toggle_exif(); }
                             Key::Named(NamedKey::Backspace) => self.state.exif_search.backspace(),
                             Key::Named(NamedKey::Delete) => self.state.exif_search.delete(),
                             Key::Named(NamedKey::ArrowLeft) => self.state.exif_search.move_left(shift),
@@ -969,6 +1050,8 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         if handled {
                             self.state.exif_scroll = 0.0; // фильтр изменился → к началу
+                            self.state.exif_blink_since = Instant::now(); // каретка видна сразу после ввода
+                            self.state.exif_caret_on = true;
                             if let Some(w) = &self.window { w.request_redraw(); }
                         }
                         return; // popup поглощает клавиатуру целиком

@@ -12,7 +12,24 @@ pub struct TextLayer {
     viewport: Viewport,
     atlas: TextAtlas,
     renderer: TextRenderer,
-    buffers: Vec<(Buffer, f32, f32, [f32; 4])>, // буфер, left, top (физ. px), цвет
+    buffers: Vec<(Buffer, f32, f32, [f32; 4], TextBounds)>, // буфер, left, top (физ. px), цвет, клип
+}
+
+/// Клип-границы текстового рана = его `rect`, пересечённый с экраном.
+/// Так длинные неразрывные значения (хеши/пути) не вылезают за свой регион (напр. карточку popup).
+fn rect_bounds(rect: &crate::ui::layout::Rect, screen: (u32, u32)) -> TextBounds {
+    let sw = screen.0 as f32;
+    let sh = screen.1 as f32;
+    let left = rect.x.clamp(0.0, sw);
+    let top = rect.y.clamp(0.0, sh);
+    let right = (rect.x + rect.w).clamp(left, sw);
+    let bottom = (rect.y + rect.h).clamp(top, sh);
+    TextBounds {
+        left: left.floor() as i32,
+        top: top.floor() as i32,
+        right: right.ceil() as i32,
+        bottom: bottom.ceil() as i32,
+    }
 }
 
 /// Линейный RGBA (0..1) → glyphon::Color (sRGB 0..255).
@@ -58,7 +75,7 @@ impl TextLayer {
 
         for cmd in cmds {
             match cmd {
-                DrawCmd::Text { rect, text, size, color, align } => {
+                DrawCmd::Text { rect, text, size, color, align, clip } => {
                     let mut buf = Buffer::new(&mut self.font_system, Metrics::new(*size, *size * 1.2));
                     buf.set_size(&mut self.font_system, Some(rect.w), Some(rect.h));
                     buf.set_text(
@@ -79,7 +96,9 @@ impl TextLayer {
                         Align::Center => rect.x + (rect.w - line_w) * 0.5,
                     };
                     let top = rect.y + (rect.h - *size * 1.2) * 0.5;
-                    self.buffers.push((buf, left, top, *color));
+                    // Клип: по явной области `clip` (popup-тело) либо по собственному `rect`.
+                    let bounds = rect_bounds(clip.as_ref().unwrap_or(rect), screen);
+                    self.buffers.push((buf, left, top, *color, bounds));
                 }
                 DrawCmd::Icon { rect, glyph, size, color, font } => {
                     let mut buf = Buffer::new(&mut self.font_system, Metrics::new(*size, *size * 1.2));
@@ -100,7 +119,7 @@ impl TextLayer {
                         buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0);
                     let left = rect.x + (rect.w - line_w) * 0.5;
                     let top = rect.y + (rect.h - *size * 1.2) * 0.5;
-                    self.buffers.push((buf, left, top, *color));
+                    self.buffers.push((buf, left, top, *color, rect_bounds(rect, screen)));
                 }
                 DrawCmd::Rect { .. } => {}
             }
@@ -109,17 +128,12 @@ impl TextLayer {
         let areas: Vec<TextArea> = self
             .buffers
             .iter()
-            .map(|(buf, left, top, color)| TextArea {
+            .map(|(buf, left, top, color, bounds)| TextArea {
                 buffer: buf,
                 left: *left,
                 top: *top,
                 scale: 1.0,
-                bounds: TextBounds {
-                    left: 0,
-                    top: 0,
-                    right: screen.0 as i32,
-                    bottom: screen.1 as i32,
-                },
+                bounds: *bounds,
                 default_color: to_glyphon_color(*color),
                 custom_glyphs: &[],
             })
@@ -147,5 +161,23 @@ impl TextLayer {
     /// Освободить место в атласе между кадрами.
     pub fn trim(&mut self) {
         self.atlas.trim();
+    }
+
+    /// Ширина строки (физ. px) при том же шрифте/кегле, что и текстовые раны.
+    /// Нужна для позиционирования каретки/выделения в поле поиска (метрики — только здесь).
+    pub fn measure_width(&mut self, text: &str, size: f32) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        let mut buf = Buffer::new(&mut self.font_system, Metrics::new(size, size * 1.2));
+        buf.set_size(&mut self.font_system, None, None);
+        buf.set_text(
+            &mut self.font_system,
+            text,
+            Attrs::new().family(Family::SansSerif),
+            Shaping::Advanced,
+        );
+        buf.shape_until_scroll(&mut self.font_system, false);
+        buf.layout_runs().next().map(|r| r.line_w).unwrap_or(0.0)
     }
 }

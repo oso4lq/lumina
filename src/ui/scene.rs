@@ -48,7 +48,10 @@ pub enum RectLayer {
 #[derive(Clone, Debug)]
 pub enum DrawCmd {
     Rect { rect: Rect, color: [f32; 4], radius: f32, layer: RectLayer },
-    Text { rect: Rect, text: String, size: f32, color: [f32; 4], align: Align },
+    /// `clip` — необязательная область отсечения текста; `None` → клип по собственному `rect`.
+    /// Используется popup'ом: строки тела клипуются по области `body` (при скролле не лезут
+    /// на поле поиска сверху / под карточку снизу).
+    Text { rect: Rect, text: String, size: f32, color: [f32; 4], align: Align, clip: Option<Rect> },
     Icon { rect: Rect, glyph: char, size: f32, color: [f32; 4], font: IconFont },
 }
 
@@ -191,6 +194,7 @@ pub fn build(
         size: theme::TITLE_FONT_SIZE * scale,
         color: theme.text_primary,
         align: Align::Center,
+        clip: None,
     });
     let icon = theme::ICON_FONT_SIZE * scale;
     cmds.push(DrawCmd::Icon { rect: layout.btn_min, glyph: GLYPH_MINIMIZE, size: icon, color: theme.text_primary, font: IconFont::WindowMdl2 });
@@ -231,6 +235,7 @@ pub fn build(
                     size: theme::META_VALUE_SIZE * scale,
                     color: theme.text_primary,
                     align: Align::Left,
+                    clip: None,
                 });
                 y += line_h;
             }
@@ -268,10 +273,10 @@ pub fn build(
             cmds.push(DrawCmd::Rect { rect: layout.btn_exif, color: theme.button_hover, radius: 0.0, layer: RectLayer::Bg });
         }
         let ai = theme::ACTION_ICON_SIZE * scale;
-        // Поворот и EXIF инертны (v0.4) → тусклый цвет; fullscreen активен → яркий.
-        cmds.push(DrawCmd::Icon { rect: layout.btn_rotate, glyph: GLYPH_ROTATE_CW, size: ai, color: theme.text_secondary, font: IconFont::Tabler });
+        // Все три кнопки активны (поворот — v0.4a, EXIF — v0.4b, fullscreen) → яркий цвет.
+        cmds.push(DrawCmd::Icon { rect: layout.btn_rotate, glyph: GLYPH_ROTATE_CW, size: ai, color: theme.text_primary, font: IconFont::Tabler });
         cmds.push(DrawCmd::Icon { rect: layout.btn_fullscreen, glyph: GLYPH_FULLSCREEN, size: ai, color: theme.text_primary, font: IconFont::Tabler });
-        cmds.push(DrawCmd::Icon { rect: layout.btn_exif, glyph: GLYPH_INFO, size: ai, color: theme.text_secondary, font: IconFont::Tabler });
+        cmds.push(DrawCmd::Icon { rect: layout.btn_exif, glyph: GLYPH_INFO, size: ai, color: theme.text_primary, font: IconFont::Tabler });
     }
 
     // --- Экранные стрелки навигации (поверх фото; проявляются на hover) ---
@@ -300,6 +305,21 @@ pub fn build(
 
 use crate::ui::textedit::TextEdit;
 
+/// Верхний зазор тела popup (физ. px): равен пустому полю под заголовком в его зоне,
+/// чтобы зазор «поиск↔первая группа» совпадал с зазором «заголовок↔поиск».
+fn popup_body_top_pad(scale: f32) -> f32 {
+    (theme::POPUP_HEADER_H - theme::POPUP_TITLE_SIZE * 1.2) * 0.5 * scale
+}
+
+/// Пересечение двух прямоугольников (пустое → нулевые w/h).
+fn intersect(a: Rect, b: Rect) -> Rect {
+    let x = a.x.max(b.x);
+    let y = a.y.max(b.y);
+    let right = (a.x + a.w).min(b.x + b.w);
+    let bottom = (a.y + a.h).min(b.y + b.h);
+    Rect { x, y, w: (right - x).max(0.0), h: (bottom - y).max(0.0) }
+}
+
 /// Подходит ли строка под фильтр (без регистра): по "group:tag" и значению.
 fn row_matches(filter: &str, group: &str, tag: &str, value: &str) -> bool {
     if filter.is_empty() {
@@ -321,6 +341,11 @@ pub fn build_popup(
     search: &TextEdit,
     scroll: f32,
     error: Option<&str>,
+    // Смещения (физ. px от начала текста поиска), измеренные шрифтом текстового слоя:
+    caret_px: f32,                // позиция каретки
+    sel_px: Option<(f32, f32)>,   // границы выделения (если есть)
+    caret_visible: bool,          // фаза мигания + фокус: рисовать ли каретку сейчас
+    focused: bool,                // поле поиска в фокусе (рамка фокуса)
 ) -> Vec<DrawCmd> {
     use crate::ui::layout::{popup_group_h, popup_layout, popup_row_h};
     let mut cmds = Vec::new();
@@ -338,26 +363,66 @@ pub fn build_popup(
         size: theme::POPUP_TITLE_SIZE * scale,
         color: theme.text_primary,
         align: Align::Left,
+        clip: None,
     });
     cmds.push(DrawCmd::Icon { rect: p.close, glyph: GLYPH_CLOSE, size: theme::ICON_FONT_SIZE * scale, color: theme.text_primary, font: IconFont::WindowMdl2 });
 
-    // Поиск: подложка + текст/плейсхолдер.
+    // Поиск: (рамка фокуса) + подложка + текст/плейсхолдер.
+    let field = Rect { x: p.search.x + pad, y: p.search.y + 4.0 * scale, w: p.search.w - pad * 2.0, h: p.search.h - 8.0 * scale };
+    if focused {
+        // акцентная рамка вокруг поля (1.5px), рисуется под подложкой
+        let b = 1.5 * scale;
+        cmds.push(DrawCmd::Rect {
+            rect: Rect { x: field.x - b, y: field.y - b, w: field.w + 2.0 * b, h: field.h + 2.0 * b },
+            color: theme.accent,
+            radius: 6.0 * scale + b,
+            layer: RectLayer::Bg,
+        });
+    }
     cmds.push(DrawCmd::Rect {
-        rect: Rect { x: p.search.x + pad, y: p.search.y + 4.0 * scale, w: p.search.w - pad * 2.0, h: p.search.h - 8.0 * scale },
-        color: theme.button_hover,
+        rect: field,
+        color: theme.popup_field_bg,
         radius: 6.0 * scale,
         layer: RectLayer::Bg,
     });
     let q = search.text();
+    let text_x = p.search.x + pad * 2.0;
+    let line_h = theme::POPUP_ROW_SIZE * 1.2 * scale;
+    let sel_y = p.search.y + (p.search.h - line_h) * 0.5;
+    let field_right = p.search.x + p.search.w - pad;
+    // Подсветка выделения (под текстом).
+    if let Some((a, b)) = sel_px {
+        let x0 = (text_x + a.min(b)).min(field_right);
+        let x1 = (text_x + a.max(b)).min(field_right);
+        if x1 > x0 {
+            cmds.push(DrawCmd::Rect {
+                rect: Rect { x: x0, y: sel_y, w: x1 - x0, h: line_h },
+                color: theme.selection_bg,
+                radius: 2.0 * scale,
+                layer: RectLayer::Bg,
+            });
+        }
+    }
     let search_text = if q.is_empty() { "Поиск по тегу…".to_string() } else { q.clone() };
     let search_color = if q.is_empty() { theme.text_secondary } else { theme.text_primary };
     cmds.push(DrawCmd::Text {
-        rect: Rect { x: p.search.x + pad * 2.0, y: p.search.y, w: p.search.w - pad * 4.0, h: p.search.h },
+        rect: Rect { x: text_x, y: p.search.y, w: p.search.w - pad * 4.0, h: p.search.h },
         text: search_text,
         size: theme::POPUP_ROW_SIZE * scale,
         color: search_color,
         align: Align::Left,
+        clip: None,
     });
+    // Каретка (поле активно, пока popup открыт) — мигает по фазе caret_visible.
+    if caret_visible {
+        let caret_x = (text_x + caret_px).min(field_right);
+        cmds.push(DrawCmd::Rect {
+            rect: Rect { x: caret_x, y: sel_y, w: theme::POPUP_CARET_W * scale, h: line_h },
+            color: theme.text_primary,
+            radius: 0.0,
+            layer: RectLayer::Bg,
+        });
+    }
 
     // Ошибка/загрузка вместо тела.
     let Some(tags) = tags else {
@@ -368,6 +433,7 @@ pub fn build_popup(
             size: theme::POPUP_ROW_SIZE * scale,
             color: theme.text_secondary,
             align: Align::Left,
+            clip: None,
         });
         return cmds;
     };
@@ -378,7 +444,8 @@ pub fn build_popup(
     let filter = search.text();
     let body_top = p.body.y;
     let body_bot = p.body.y + p.body.h;
-    let mut cursor_y = body_top - scroll; // виртуальная позиция (со скроллом)
+    // верхний зазор тела = пустое поле под заголовком (симметрично зазору заголовок↔поиск)
+    let mut cursor_y = body_top - scroll + popup_body_top_pad(scale); // виртуальная позиция (со скроллом)
 
     for g in &tags.groups {
         let visible: Vec<&(String, String)> =
@@ -386,33 +453,44 @@ pub fn build_popup(
         if visible.is_empty() {
             continue;
         }
-        // заголовок группы (если в пределах тела)
+        // заголовок группы (если в пределах тела); клип по `p.body` — при скролле не лезет за тело
         if cursor_y + grp_h > body_top && cursor_y < body_bot {
+            // плашка на всю ширину тела — заметный заголовок (геом. клип по body)
+            let band = intersect(Rect { x: p.body.x, y: cursor_y, w: p.body.w, h: grp_h }, p.body);
+            if band.h > 0.0 {
+                cmds.push(DrawCmd::Rect { rect: band, color: theme.popup_group_bg, radius: 0.0, layer: RectLayer::Bg });
+            }
+            let r = Rect { x: p.body.x + pad, y: cursor_y, w: p.body.w - pad * 2.0, h: grp_h };
             cmds.push(DrawCmd::Text {
-                rect: Rect { x: p.body.x + pad, y: cursor_y, w: p.body.w - pad * 2.0, h: grp_h },
+                rect: r,
                 text: g.name.clone(),
                 size: theme::POPUP_GROUP_SIZE * scale,
-                color: theme.text_secondary,
+                color: theme.text_primary,
                 align: Align::Left,
+                clip: Some(intersect(r, p.body)),
             });
         }
         cursor_y += grp_h;
         for (tag, value) in visible {
             if cursor_y + row_h > body_top && cursor_y < body_bot {
                 // ключ слева, значение справа
+                let r_tag = Rect { x: p.body.x + pad, y: cursor_y, w: (p.body.w - pad * 2.0) * 0.45, h: row_h };
                 cmds.push(DrawCmd::Text {
-                    rect: Rect { x: p.body.x + pad, y: cursor_y, w: (p.body.w - pad * 2.0) * 0.45, h: row_h },
+                    rect: r_tag,
                     text: tag.clone(),
                     size: theme::POPUP_ROW_SIZE * scale,
                     color: theme.text_secondary,
                     align: Align::Left,
+                    clip: Some(intersect(r_tag, p.body)),
                 });
+                let r_val = Rect { x: p.body.x + (p.body.w - pad * 2.0) * 0.45, y: cursor_y, w: (p.body.w - pad * 2.0) * 0.55, h: row_h };
                 cmds.push(DrawCmd::Text {
-                    rect: Rect { x: p.body.x + (p.body.w - pad * 2.0) * 0.45, y: cursor_y, w: (p.body.w - pad * 2.0) * 0.55, h: row_h },
+                    rect: r_val,
                     text: value.clone(),
                     size: theme::POPUP_ROW_SIZE * scale,
                     color: theme.text_primary,
                     align: Align::Left,
+                    clip: Some(intersect(r_val, p.body)),
                 });
             }
             cursor_y += row_h;
@@ -425,7 +503,7 @@ pub fn build_popup(
 pub fn popup_content_height(tags: &crate::exif::tags::ExifTags, search: &TextEdit, scale: f32) -> f32 {
     use crate::ui::layout::{popup_group_h, popup_row_h};
     let filter = search.text();
-    let mut h = 0.0;
+    let mut h = popup_body_top_pad(scale); // верхний зазор тела входит в прокручиваемую высоту
     for g in &tags.groups {
         let n = g.tags.iter().filter(|(t, v)| row_matches(&filter, &g.name, t, v)).count();
         if n > 0 {
@@ -505,18 +583,19 @@ mod tests {
     }
 
     #[test]
-    fn exif_icon_is_dimmer_than_fullscreen() {
+    fn action_icons_share_active_color() {
         let cmds = fixture(|_| {});
-        let mut fs = None;
-        let mut ex = None;
+        let theme = ThemePalette::dark();
+        let mut colors = std::collections::HashMap::new();
         for c in &cmds {
             if let DrawCmd::Icon { glyph, color, font: IconFont::Tabler, .. } = c {
-                if *glyph == GLYPH_FULLSCREEN { fs = Some(*color); }
-                if *glyph == GLYPH_INFO { ex = Some(*color); }
+                colors.insert(*glyph, *color);
             }
         }
-        // EXIF использует text_secondary (тусклее), fullscreen — text_primary
-        assert_ne!(fs.unwrap(), ex.unwrap());
+        // Поворот/fullscreen/EXIF — все активны → одинаковый яркий цвет (text_primary).
+        assert_eq!(colors[&GLYPH_ROTATE_CW], theme.text_primary);
+        assert_eq!(colors[&GLYPH_FULLSCREEN], theme.text_primary);
+        assert_eq!(colors[&GLYPH_INFO], theme.text_primary);
     }
 
     #[test]
@@ -567,7 +646,7 @@ mod tests {
         let theme = ThemePalette::dark();
         let tags = sample_tags();
         let search = crate::ui::textedit::TextEdit::new();
-        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None);
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true);
         // есть текст значения Model
         let has_model = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "X-T5"));
         assert!(has_model);
@@ -583,7 +662,7 @@ mod tests {
         let tags = sample_tags();
         let mut search = crate::ui::textedit::TextEdit::new();
         search.insert_str("model"); // фильтр (без регистра) — только строка Model
-        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None);
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true);
         let has_model = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "X-T5"));
         let has_make = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Fujifilm"));
         assert!(has_model);
@@ -595,8 +674,28 @@ mod tests {
         let win = glam::Vec2::new(1280.0, 800.0);
         let theme = ThemePalette::dark();
         let search = crate::ui::textedit::TextEdit::new();
-        let cmds = build_popup(win, 1.0, &theme, "a.jpg", None, &search, 0.0, Some("exiftool недоступен"));
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", None, &search, 0.0, Some("exiftool недоступен"), 0.0, None, true, true);
         let has_err = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text.contains("недоступен")));
         assert!(has_err);
+    }
+
+    #[test]
+    fn popup_body_rows_clipped_within_body() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let search = crate::ui::textedit::TextEdit::new();
+        let p = crate::ui::layout::popup_layout(win, 1.0);
+        // прокрутка на половину строки — первая строка частично уезжает за верх тела
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 13.0, None, 0.0, None, true, true);
+        // строки тела несут clip и не выходят за пределы body (не лезут на поиск/под карточку)
+        let clipped = cmds.iter().filter(|c| matches!(c, DrawCmd::Text { clip: Some(_), .. })).count();
+        assert!(clipped > 0, "у строк тела должен быть clip");
+        for c in &cmds {
+            if let DrawCmd::Text { clip: Some(cl), .. } = c {
+                assert!(cl.y >= p.body.y - 0.01, "clip не должен заходить выше body_top");
+                assert!(cl.y + cl.h <= p.body.y + p.body.h + 0.01, "и ниже body_bot");
+            }
+        }
     }
 }

@@ -81,6 +81,12 @@ impl Renderer {
         self.image_size
     }
 
+    /// Ширина строки (физ. px) тем же шрифтом/кеглем, что и текстовый слой —
+    /// для позиционирования каретки/выделения в поле поиска EXIF popup.
+    pub fn measure_text_width(&mut self, text: &str, size: f32) -> f32 {
+        self.text.measure_width(text, size)
+    }
+
     pub fn upload_texture(&mut self, rgba: &[u8], width: u32, height: u32) {
         self.blit.upload(&self.ctx.device, &self.ctx.queue, rgba, width, height);
         self.image_size = Some(Vec2::new(width as f32, height as f32));
