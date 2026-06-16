@@ -99,6 +99,8 @@ pub struct UiState {
     pub thumb_count: usize,
     pub active_index: usize,
     pub scroll: f32,
+    /// EXIF popup открыт.
+    pub exif_open: bool,
     /// Прозрачность экранных стрелок [prev, next] (0..1): к 1 при hover, иначе к 0.
     pub nav_alpha: [f32; 2],
     /// Можно ли листать prev/next (нет первого/последнего — стрелка скрыта и инертна).
@@ -120,6 +122,7 @@ impl UiState {
             thumb_count: 0,
             active_index: 0,
             scroll: 0.0,
+            exif_open: false,
             nav_alpha: [0.0, 0.0],
             can_prev: false,
             can_next: false,
@@ -295,6 +298,143 @@ pub fn build(
     cmds
 }
 
+use crate::ui::textedit::TextEdit;
+
+/// Подходит ли строка под фильтр (без регистра): по "group:tag" и значению.
+fn row_matches(filter: &str, group: &str, tag: &str, value: &str) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    let f = filter.to_lowercase();
+    format!("{group}:{tag}").to_lowercase().contains(&f) || value.to_lowercase().contains(&f)
+}
+
+/// Построить DrawCmd'ы EXIF popup (рисуются поверх всего в конце кадра).
+/// `tags=None` + `error=Some` → баннер ошибки; `tags=None` без ошибки → «загрузка…».
+#[allow(clippy::too_many_arguments)]
+pub fn build_popup(
+    win: glam::Vec2,
+    scale: f32,
+    theme: &ThemePalette,
+    filename: &str,
+    tags: Option<&crate::exif::tags::ExifTags>,
+    search: &TextEdit,
+    scroll: f32,
+    error: Option<&str>,
+) -> Vec<DrawCmd> {
+    use crate::ui::layout::{popup_group_h, popup_layout, popup_row_h};
+    let mut cmds = Vec::new();
+    let p = popup_layout(win, scale);
+    let pad = theme::POPUP_PAD * scale;
+
+    // Затемнение всего окна + карточка.
+    cmds.push(DrawCmd::Rect { rect: Rect { x: 0.0, y: 0.0, w: win.x, h: win.y }, color: theme::POPUP_DIM, radius: 0.0, layer: RectLayer::Bg });
+    cmds.push(DrawCmd::Rect { rect: p.card, color: theme.bg_surface, radius: theme::POPUP_RADIUS * scale, layer: RectLayer::Bg });
+
+    // Заголовок: "EXIF — имя" + [✕]
+    cmds.push(DrawCmd::Text {
+        rect: Rect { x: p.header.x + pad, y: p.header.y, w: p.header.w - pad * 2.0, h: p.header.h },
+        text: format!("EXIF — {filename}"),
+        size: theme::POPUP_TITLE_SIZE * scale,
+        color: theme.text_primary,
+        align: Align::Left,
+    });
+    cmds.push(DrawCmd::Icon { rect: p.close, glyph: GLYPH_CLOSE, size: theme::ICON_FONT_SIZE * scale, color: theme.text_primary, font: IconFont::WindowMdl2 });
+
+    // Поиск: подложка + текст/плейсхолдер.
+    cmds.push(DrawCmd::Rect {
+        rect: Rect { x: p.search.x + pad, y: p.search.y + 4.0 * scale, w: p.search.w - pad * 2.0, h: p.search.h - 8.0 * scale },
+        color: theme.button_hover,
+        radius: 6.0 * scale,
+        layer: RectLayer::Bg,
+    });
+    let q = search.text();
+    let search_text = if q.is_empty() { "Поиск по тегу…".to_string() } else { q.clone() };
+    let search_color = if q.is_empty() { theme.text_secondary } else { theme.text_primary };
+    cmds.push(DrawCmd::Text {
+        rect: Rect { x: p.search.x + pad * 2.0, y: p.search.y, w: p.search.w - pad * 4.0, h: p.search.h },
+        text: search_text,
+        size: theme::POPUP_ROW_SIZE * scale,
+        color: search_color,
+        align: Align::Left,
+    });
+
+    // Ошибка/загрузка вместо тела.
+    let Some(tags) = tags else {
+        let msg = error.unwrap_or("Загрузка EXIF…");
+        cmds.push(DrawCmd::Text {
+            rect: Rect { x: p.body.x + pad, y: p.body.y + pad, w: p.body.w - pad * 2.0, h: popup_row_h(scale) },
+            text: msg.to_string(),
+            size: theme::POPUP_ROW_SIZE * scale,
+            color: theme.text_secondary,
+            align: Align::Left,
+        });
+        return cmds;
+    };
+
+    // Строки: проходим группы → заголовок группы (если есть видимые) + строки.
+    let row_h = popup_row_h(scale);
+    let grp_h = popup_group_h(scale);
+    let filter = search.text();
+    let body_top = p.body.y;
+    let body_bot = p.body.y + p.body.h;
+    let mut cursor_y = body_top - scroll; // виртуальная позиция (со скроллом)
+
+    for g in &tags.groups {
+        let visible: Vec<&(String, String)> =
+            g.tags.iter().filter(|(t, v)| row_matches(&filter, &g.name, t, v)).collect();
+        if visible.is_empty() {
+            continue;
+        }
+        // заголовок группы (если в пределах тела)
+        if cursor_y + grp_h > body_top && cursor_y < body_bot {
+            cmds.push(DrawCmd::Text {
+                rect: Rect { x: p.body.x + pad, y: cursor_y, w: p.body.w - pad * 2.0, h: grp_h },
+                text: g.name.clone(),
+                size: theme::POPUP_GROUP_SIZE * scale,
+                color: theme.text_secondary,
+                align: Align::Left,
+            });
+        }
+        cursor_y += grp_h;
+        for (tag, value) in visible {
+            if cursor_y + row_h > body_top && cursor_y < body_bot {
+                // ключ слева, значение справа
+                cmds.push(DrawCmd::Text {
+                    rect: Rect { x: p.body.x + pad, y: cursor_y, w: (p.body.w - pad * 2.0) * 0.45, h: row_h },
+                    text: tag.clone(),
+                    size: theme::POPUP_ROW_SIZE * scale,
+                    color: theme.text_secondary,
+                    align: Align::Left,
+                });
+                cmds.push(DrawCmd::Text {
+                    rect: Rect { x: p.body.x + (p.body.w - pad * 2.0) * 0.45, y: cursor_y, w: (p.body.w - pad * 2.0) * 0.55, h: row_h },
+                    text: value.clone(),
+                    size: theme::POPUP_ROW_SIZE * scale,
+                    color: theme.text_primary,
+                    align: Align::Left,
+                });
+            }
+            cursor_y += row_h;
+        }
+    }
+    cmds
+}
+
+/// Полная высота содержимого popup (для клампа скролла), физ. px.
+pub fn popup_content_height(tags: &crate::exif::tags::ExifTags, search: &TextEdit, scale: f32) -> f32 {
+    use crate::ui::layout::{popup_group_h, popup_row_h};
+    let filter = search.text();
+    let mut h = 0.0;
+    for g in &tags.groups {
+        let n = g.tags.iter().filter(|(t, v)| row_matches(&filter, &g.name, t, v)).count();
+        if n > 0 {
+            h += popup_group_h(scale) + n as f32 * popup_row_h(scale);
+        }
+    }
+    h
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,5 +553,50 @@ mod tests {
         assert_eq!(humanize_bytes(512), "512B");
         assert!(humanize_bytes(2048).contains("KB"));
         assert!(humanize_bytes(5 * 1024 * 1024).contains("MB"));
+    }
+
+    fn sample_tags() -> crate::exif::tags::ExifTags {
+        crate::exif::tags::parse(
+            r#"[{"SourceFile":"a","EXIF:Make":"Fujifilm","EXIF:Model":"X-T5","GPS:GPSLatitude":"41 N"}]"#,
+        )
+    }
+
+    #[test]
+    fn popup_emits_card_and_rows() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let search = crate::ui::textedit::TextEdit::new();
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None);
+        // есть текст значения Model
+        let has_model = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "X-T5"));
+        assert!(has_model);
+        // есть заголовок группы EXIF
+        let has_group = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "EXIF"));
+        assert!(has_group);
+    }
+
+    #[test]
+    fn popup_filter_limits_rows() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let mut search = crate::ui::textedit::TextEdit::new();
+        search.insert_str("model"); // фильтр (без регистра) — только строка Model
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None);
+        let has_model = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "X-T5"));
+        let has_make = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Fujifilm"));
+        assert!(has_model);
+        assert!(!has_make);
+    }
+
+    #[test]
+    fn popup_error_banner_shown() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let search = crate::ui::textedit::TextEdit::new();
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", None, &search, 0.0, Some("exiftool недоступен"));
+        let has_err = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text.contains("недоступен")));
+        assert!(has_err);
     }
 }
