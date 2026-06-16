@@ -146,7 +146,9 @@ impl App {
             let idx = cat.current_index();
             self.state.ui.can_prev = idx > 0;
             self.state.ui.can_next = idx + 1 < n;
-            self.state.thumb_aspects = vec![theme::THUMB_DEFAULT_AR; n];
+            // Сохраняем уже вычисленные аспекты при навигации внутри папки (n не меняется);
+            // сброс к дефолту — только при смене набора файлов (open_file чистит список).
+            reconcile_aspects(&mut self.state.thumb_aspects, n);
             self.state.raw_flags = files
                 .iter()
                 .map(|p| RawDecoder::supports(&crate::decoder::ext_lower(p)))
@@ -290,6 +292,8 @@ impl App {
                 self.state.inited_generation = None;
                 self.state.thumbs.reset();
                 self.state.transforms.clear();
+                // сброс аспектов миниатюр: смена папки → reconcile_aspects пере-инициализирует
+                self.state.thumb_aspects.clear();
                 self.state.ui.scroll = 0.0;
                 self.load_current();
             }
@@ -388,6 +392,19 @@ pub fn make_thumb(src: &[u8], sw: u32, sh: u32, th: u32) -> (Vec<u8>, u32, u32) 
     };
     let resized = imageops::resize(&buf, tw, th, imageops::FilterType::Triangle);
     (resized.into_raw(), tw, th)
+}
+
+/// Согласовать длину списка аспектов миниатюр с числом файлов каталога `n`.
+/// При совпадении длины СОХРАНЯЕТ значения: навигация внутри папки не должна
+/// сбрасывать уже вычисленные аспекты к дефолту — декодированные миниатюры
+/// повторно не декодируются (троттлинг в `request_thumbnails`), значит обновить
+/// аспект назад было бы некому, и портретные миниатюры «расплылись» бы в landscape.
+/// При расхождении (другая папка, см. сброс в `open_file`) — пере-инициализация дефолтом.
+fn reconcile_aspects(aspects: &mut Vec<f32>, n: usize) {
+    if aspects.len() != n {
+        aspects.clear();
+        aspects.resize(n, crate::ui::theme::THUMB_DEFAULT_AR);
+    }
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -877,5 +894,35 @@ impl ApplicationHandler<UserEvent> for App {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::theme::THUMB_DEFAULT_AR;
+
+    #[test]
+    fn reconcile_keeps_values_when_len_matches() {
+        // навигация внутри папки (n не меняется) НЕ должна сбрасывать уже
+        // вычисленные аспекты к дефолту — иначе портретные миниатюры станут landscape
+        let mut a = vec![0.75, 1.333, 0.75];
+        reconcile_aspects(&mut a, 3);
+        assert_eq!(a, vec![0.75, 1.333, 0.75]);
+    }
+
+    #[test]
+    fn reconcile_resets_on_len_change() {
+        // другая папка (другое число файлов) → пере-инициализация дефолтом
+        let mut a = vec![0.75, 1.333];
+        reconcile_aspects(&mut a, 4);
+        assert_eq!(a, vec![THUMB_DEFAULT_AR; 4]);
+    }
+
+    #[test]
+    fn reconcile_from_empty_builds_defaults() {
+        let mut a: Vec<f32> = Vec::new();
+        reconcile_aspects(&mut a, 2);
+        assert_eq!(a, vec![THUMB_DEFAULT_AR; 2]);
     }
 }
