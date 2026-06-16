@@ -186,12 +186,19 @@ impl ViewTransform {
     /// Ограничить pan так, чтобы изображение не отрывалось от краёв окна.
     /// По оси, где картинка больше окна, pan ∈ ±(scaled-win)/2 (без полей по краям).
     /// По оси, где картинка ≤ окна, pan = 0 (центрирование, перемещение запрещено).
+    /// Учитывает эффективные размеры (поворот 90°/270° меняет ширину/высоту местами).
     pub fn clamp_pan(&mut self, win: Vec2, img: Vec2) {
-        let scaled = img * self.zoom;
+        let eff = self.transform.effective_dims(img);
+        let scaled = eff * self.zoom;
         let limit_x = ((scaled.x - win.x) * 0.5).max(0.0);
         let limit_y = ((scaled.y - win.y) * 0.5).max(0.0);
         self.pan.x = self.pan.x.clamp(-limit_x, limit_x);
         self.pan.y = self.pan.y.clamp(-limit_y, limit_y);
+    }
+
+    /// fit-zoom с учётом текущего поворота (эффективные размеры).
+    pub fn fit_zoom(&self, win: Vec2, img: Vec2) -> f32 {
+        fit_zoom(win, self.transform.effective_dims(img))
     }
 
     /// Подстроить вид под смену размеров изображения (preview→full),
@@ -207,19 +214,42 @@ impl ViewTransform {
         self.clamp_pan(win, new_img);
     }
 
-    /// Матрица: пиксели изображения → clip space, со вшитыми zoom и pan.
+    /// Модель-матрица: unit-quad [0,1]² → экранные пиксели, с центрированием,
+    /// pan, zoom, поворотом и отражением. Картинка вращается вокруг своего центра.
+    /// Для rotation=0, flip=none эквивалентно старой формуле T(origin) * S(scaled).
+    fn model_matrix(&self, win: Vec2, img: Vec2) -> Mat4 {
+        let scaled = img * self.zoom; // исходные размеры × zoom
+        let center = win * 0.5 + self.pan;
+        let fx = if self.transform.flip_h { -1.0 } else { 1.0 };
+        let fy = if self.transform.flip_v { -1.0 } else { 1.0 };
+        let angle = (self.transform.rotation as f32).to_radians();
+        Mat4::from_translation(glam::Vec3::new(center.x, center.y, 0.0))
+            * Mat4::from_rotation_z(angle)
+            * Mat4::from_scale(glam::Vec3::new(scaled.x * fx, scaled.y * fy, 1.0))
+            * Mat4::from_translation(glam::Vec3::new(-0.5, -0.5, 0.0))
+    }
+
+    /// Матрица: пиксели изображения → clip space, со вшитыми zoom, pan, поворотом и отражением.
     /// Картинка центрируется в окне, затем сдвигается на pan и масштабируется zoom.
     pub fn matrix(&self, win: Vec2, img: Vec2) -> Mat4 {
-        // Размер картинки на экране в пикселях
-        let scaled = img * self.zoom;
-        // Левый-верхний угол картинки: центрируем + pan
-        let origin = (win - scaled) * 0.5 + self.pan;
         // Ортопроекция: пиксели экрана (0..win) → clip (-1..1), Y вниз
         let proj = Mat4::orthographic_rh(0.0, win.x, win.y, 0.0, -1.0, 1.0);
-        // Модель: масштаб quad'а (0..1) до scaled и перенос в origin
-        let model = Mat4::from_translation(glam::Vec3::new(origin.x, origin.y, 0.0))
-            * Mat4::from_scale(glam::Vec3::new(scaled.x, scaled.y, 1.0));
-        proj * model
+        proj * self.model_matrix(win, img)
+    }
+
+    /// Четыре угла изображения в экранных пикселях (для тестов геометрии и хитов).
+    pub fn screen_quad(&self, win: Vec2, img: Vec2) -> [Vec2; 4] {
+        let m = self.model_matrix(win, img);
+        let corners = [
+            glam::Vec4::new(0.0, 0.0, 0.0, 1.0),
+            glam::Vec4::new(1.0, 0.0, 0.0, 1.0),
+            glam::Vec4::new(0.0, 1.0, 0.0, 1.0),
+            glam::Vec4::new(1.0, 1.0, 0.0, 1.0),
+        ];
+        corners.map(|c| {
+            let p = m * c;
+            Vec2::new(p.x, p.y)
+        })
     }
 }
 
@@ -418,5 +448,79 @@ mod tests {
         v.rescale_for_new_image(win, old_img, new_img);
         let screen_after = new_img * v.zoom();
         assert!((screen_before - screen_after).length() < 1.0);
+    }
+
+    #[test]
+    fn rotated_90_swaps_effective_dims() {
+        let t = Transform { rotation: 90, flip_h: false, flip_v: false };
+        let eff = t.effective_dims(Vec2::new(6000.0, 4000.0));
+        assert_eq!(eff, Vec2::new(4000.0, 6000.0));
+        let t0 = Transform::default();
+        assert_eq!(t0.effective_dims(Vec2::new(6000.0, 4000.0)), Vec2::new(6000.0, 4000.0));
+    }
+
+    #[test]
+    fn fit_zoom_uses_effective_dims_after_rotation() {
+        let win = Vec2::new(800.0, 800.0);
+        let img = Vec2::new(4000.0, 2000.0);
+        let mut v = ViewTransform::new();
+        let fit0 = v.fit_zoom(win, img);
+        assert!((fit0 - 0.2).abs() < 1e-6);
+        v.rotate_cw();
+        let img2 = Vec2::new(3000.0, 1000.0);
+        let fit_land = ViewTransform::new().fit_zoom(win, img2);
+        let fit_rot = v.fit_zoom(win, img2);
+        assert!((fit_land - 800.0 / 3000.0).abs() < 1e-6);
+        assert!((fit_rot - 800.0 / 3000.0).abs() < 1e-6);
+        let mut vr = ViewTransform::new();
+        vr.rotate_cw();
+        let asym = Vec2::new(1000.0, 4000.0);
+        assert!((vr.fit_zoom(win, asym) - 800.0 / 4000.0).abs() < 1e-6);
+        assert!((ViewTransform::new().fit_zoom(win, asym) - 800.0 / 4000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn clamp_pan_uses_effective_dims_when_rotated() {
+        let win = Vec2::new(1000.0, 1000.0);
+        let img = Vec2::new(2000.0, 800.0);
+        let mut v = ViewTransform::new();
+        v.set_zoom_immediate(1.0);
+        v.rotate_cw();
+        v.set_pan(Vec2::new(10_000.0, 10_000.0));
+        v.clamp_pan(win, img);
+        assert_eq!(v.pan(), Vec2::new(0.0, 500.0));
+    }
+
+    #[test]
+    fn screen_quad_bbox_matches_effective_size() {
+        let win = Vec2::new(1000.0, 800.0);
+        let img = Vec2::new(400.0, 200.0);
+        let mut v = ViewTransform::new();
+        v.set_zoom_immediate(2.0);
+        v.rotate_cw();
+        let q = v.screen_quad(win, img);
+        let min_x = q.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+        let max_x = q.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+        let min_y = q.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+        let max_y = q.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+        assert!(((max_x - min_x) - 200.0 * 2.0).abs() < 0.5);
+        assert!(((max_y - min_y) - 400.0 * 2.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn matrix_finite_for_all_transforms() {
+        let win = Vec2::new(1000.0, 800.0);
+        let img = Vec2::new(400.0, 300.0);
+        for rot in [0u16, 90, 180, 270] {
+            for fh in [false, true] {
+                for fv in [false, true] {
+                    let mut v = ViewTransform::new();
+                    v.set_transform(Transform { rotation: rot, flip_h: fh, flip_v: fv });
+                    let m = v.matrix(win, img);
+                    assert!(m.to_cols_array().iter().all(|c| c.is_finite()),
+                        "rot={rot} fh={fh} fv={fv}");
+                }
+            }
+        }
     }
 }
