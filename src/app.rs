@@ -887,6 +887,7 @@ impl ApplicationHandler<UserEvent> for App {
                                         if let Some(w) = &self.window { w.request_redraw(); }
                                     }
                                 }
+                                _ => {} // варианты редактирования (часть 2) — заменяется в Task 8
                             }
                         }
                         return;

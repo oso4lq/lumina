@@ -110,6 +110,14 @@ pub enum PopupRegion {
     Search,
     Body,
     Outside,
+    RowEdit(usize),    // индекс в popup_rows
+    RowDelete(usize),
+    GpsDeleteAll(usize),
+    FooterSave,
+    FooterCancel,
+    ConfirmSave,
+    ConfirmDiscard,
+    ConfirmKeep,
 }
 
 /// Хит-тест popup. Вызывается app'ом ПЕРВЫМ, когда popup открыт.
@@ -122,6 +130,79 @@ pub fn hit_popup(win: Vec2, scale: f32, cursor: Vec2) -> PopupRegion {
         return PopupRegion::Search;
     }
     if p.body.contains(cursor) {
+        return PopupRegion::Body;
+    }
+    PopupRegion::Outside
+}
+
+/// Хит-тест popup в режиме редактирования (часть 2): футер, действия строк, GPS-delete-all.
+/// `confirm` — показан ли бар подтверждения закрытия (тогда футер = три кнопки confirm).
+/// Приоритет: confirm/футер → действия строки → Search → Body → Close → Outside.
+#[allow(clippy::too_many_arguments)]
+pub fn hit_popup_edit(
+    win: Vec2,
+    scale: f32,
+    cursor: Vec2,
+    tags: &crate::exif::tags::ExifTags,
+    filter: &str,
+    scroll: f32,
+    confirm: bool,
+) -> PopupRegion {
+    let p = crate::ui::layout::popup_layout(win, scale);
+    // close-кнопка заголовка
+    if p.close.contains(cursor) {
+        return PopupRegion::Close;
+    }
+    // футер / подтверждение
+    if p.footer.contains(cursor) {
+        let (save, cancel) = crate::ui::layout::popup_footer_buttons(&p, scale);
+        if confirm {
+            // три кнопки: используем те же save/cancel + третья слева (Keep)
+            if save.contains(cursor) {
+                return PopupRegion::ConfirmSave;
+            }
+            if cancel.contains(cursor) {
+                return PopupRegion::ConfirmDiscard;
+            }
+            return PopupRegion::ConfirmKeep;
+        }
+        if save.contains(cursor) {
+            return PopupRegion::FooterSave;
+        }
+        if cancel.contains(cursor) {
+            return PopupRegion::FooterCancel;
+        }
+        return PopupRegion::Body; // клики по пустому футеру не закрывают
+    }
+    if p.search.contains(cursor) {
+        return PopupRegion::Search;
+    }
+    if p.body.contains(cursor) {
+        // действия строк
+        let rows = crate::ui::scene::popup_rows(tags, filter, scale, scroll, p.body);
+        for (i, r) in rows.iter().enumerate() {
+            if cursor.y < r.y || cursor.y >= r.y + r.h {
+                continue;
+            }
+            match r.kind {
+                crate::ui::scene::PopupRowKind::Group if r.group == "GPS" => {
+                    let (_e, del) = crate::ui::scene::popup_row_actions(r, p.body, scale);
+                    if del.contains(cursor) {
+                        return PopupRegion::GpsDeleteAll(i);
+                    }
+                }
+                crate::ui::scene::PopupRowKind::Tag if r.editable => {
+                    let (edit, del) = crate::ui::scene::popup_row_actions(r, p.body, scale);
+                    if edit.contains(cursor) {
+                        return PopupRegion::RowEdit(i);
+                    }
+                    if del.contains(cursor) {
+                        return PopupRegion::RowDelete(i);
+                    }
+                }
+                _ => {}
+            }
+        }
         return PopupRegion::Body;
     }
     PopupRegion::Outside
@@ -289,6 +370,32 @@ mod tests {
         assert_eq!(hit_popup(win, 1.0, cb), PopupRegion::Body);
         // угол окна — вне карточки
         assert_eq!(hit_popup(win, 1.0, Vec2::new(5.0, 5.0)), PopupRegion::Outside);
+    }
+
+    #[test]
+    fn popup_footer_save_cancel_hit() {
+        let win = Vec2::new(1280.0, 800.0);
+        let p = crate::ui::layout::popup_layout(win, 1.0);
+        let (save, cancel) = crate::ui::layout::popup_footer_buttons(&p, 1.0);
+        let sc = Vec2::new(save.x + save.w * 0.5, save.y + save.h * 0.5);
+        let cc = Vec2::new(cancel.x + cancel.w * 0.5, cancel.y + cancel.h * 0.5);
+        let tags = crate::exif::tags::parse(r#"[{"SourceFile":"a","EXIF:Make":"X"}]"#);
+        assert_eq!(hit_popup_edit(win, 1.0, sc, &tags, "", 0.0, false), PopupRegion::FooterSave);
+        assert_eq!(hit_popup_edit(win, 1.0, cc, &tags, "", 0.0, false), PopupRegion::FooterCancel);
+    }
+
+    #[test]
+    fn popup_row_edit_delete_hit() {
+        let win = Vec2::new(1280.0, 800.0);
+        let p = crate::ui::layout::popup_layout(win, 1.0);
+        let tags = crate::exif::tags::parse(r#"[{"SourceFile":"a","EXIF:Make":"X"}]"#);
+        let rows = crate::ui::scene::popup_rows(&tags, "", 1.0, 0.0, p.body);
+        let i = rows.iter().position(|r| r.tag == "Make").unwrap();
+        let (edit, del) = crate::ui::scene::popup_row_actions(&rows[i], p.body, 1.0);
+        let ec = Vec2::new(edit.x + edit.w * 0.5, edit.y + edit.h * 0.5);
+        let dc = Vec2::new(del.x + del.w * 0.5, del.y + del.h * 0.5);
+        assert_eq!(hit_popup_edit(win, 1.0, ec, &tags, "", 0.0, false), PopupRegion::RowEdit(i));
+        assert_eq!(hit_popup_edit(win, 1.0, dc, &tags, "", 0.0, false), PopupRegion::RowDelete(i));
     }
 
     #[test]
