@@ -126,6 +126,7 @@ pub struct PopupLayout {
     pub close: Rect,
     pub search: Rect,
     pub body: Rect,
+    pub footer: Rect,
 }
 
 /// Посчитать раскладку popup для размера окна `win` и масштаба `scale`.
@@ -142,9 +143,12 @@ pub fn popup_layout(win: Vec2, scale: f32) -> PopupLayout {
     let header = Rect { x, y, w, h: hh };
     let close = Rect { x: x + w - hh, y, w: hh, h: hh }; // квадрат в правом верхнем углу
     let search = Rect { x, y: y + hh, w, h: sh };
-    let body = Rect { x, y: y + hh + sh, w, h: (h - hh - sh).max(0.0) };
+    let fh = theme::POPUP_FOOTER_H * scale;
+    let body_top = y + hh + sh;
+    let footer = Rect { x, y: y + h - fh, w, h: fh };
+    let body = Rect { x, y: body_top, w, h: (footer.y - body_top).max(0.0) };
 
-    PopupLayout { card, header, close, search, body }
+    PopupLayout { card, header, close, search, body, footer }
 }
 
 /// Высота одной строки тега и заголовка группы (физ. px) — для скролла/хита.
@@ -153,6 +157,18 @@ pub fn popup_row_h(scale: f32) -> f32 {
 }
 pub fn popup_group_h(scale: f32) -> f32 {
     theme::POPUP_GROUP_H * scale
+}
+
+/// Прямоугольники кнопок футера: (save, cancel). Save — правая (primary), cancel — левее.
+pub fn popup_footer_buttons(p: &PopupLayout, scale: f32) -> (Rect, Rect) {
+    let pad = theme::POPUP_PAD * scale;
+    let bh = 28.0 * scale;
+    let bw = 96.0 * scale;
+    let gap = 8.0 * scale;
+    let by = p.footer.y + (p.footer.h - bh) * 0.5;
+    let save = Rect { x: p.footer.x + p.footer.w - pad - bw, y: by, w: bw, h: bh };
+    let cancel = Rect { x: save.x - gap - bw, y: by, w: bw, h: bh };
+    (save, cancel)
 }
 
 /// Физическая ширина миниатюры по аспекту фото (высота фиксирована).
@@ -354,11 +370,26 @@ mod tests {
         // поиск под заголовком
         assert_eq!(p.search.y, p.card.y + 40.0);
         assert_eq!(p.search.h, 34.0);
-        // тело под поиском, до низа карточки
+        // тело под поиском, до верха футера
         assert_eq!(p.body.y, p.card.y + 40.0 + 34.0);
-        assert!((p.body.y + p.body.h - (p.card.y + p.card.h)).abs() < 0.5);
+        assert!((p.body.y + p.body.h - p.footer.y).abs() < 0.5);
         // close-кнопка в правом верхнем углу карточки
         assert!((p.close.x + p.close.w - (p.card.x + p.card.w)).abs() < 0.5);
+    }
+
+    #[test]
+    fn popup_has_footer_and_body_shrinks() {
+        let win = Vec2::new(1280.0, 800.0);
+        let p = popup_layout(win, 1.0);
+        // футер внизу карточки
+        assert!((p.footer.y + p.footer.h - (p.card.y + p.card.h)).abs() < 0.5);
+        assert_eq!(p.footer.h, 46.0);
+        // тело заканчивается на верхе футера
+        assert!((p.body.y + p.body.h - p.footer.y).abs() < 0.5);
+        // кнопки футера внутри футера, save правее cancel
+        let (save, cancel) = popup_footer_buttons(&p, 1.0);
+        assert!(save.x > cancel.x);
+        assert!(save.y >= p.footer.y - 0.5 && save.y + save.h <= p.footer.y + p.footer.h + 0.5);
     }
 
     #[test]
