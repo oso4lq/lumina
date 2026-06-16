@@ -22,6 +22,8 @@ pub const GLYPH_INFO: char = '\u{EAC5}';       // ti-info-circle
 pub const GLYPH_ROTATE_CW: char = '\u{EB15}';  // ti-rotate-clockwise
 pub const GLYPH_PLAY: char = '\u{ED46}';       // ti-player-play
 pub const GLYPH_FS_EXIT: char = '\u{EA29}';    // ti-arrows-minimize (выход из fullscreen)
+pub const GLYPH_CHEVRON_LEFT: char = '\u{EA60}';  // ti-chevron-left
+pub const GLYPH_CHEVRON_RIGHT: char = '\u{EA61}'; // ti-chevron-right
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IconFont {
@@ -97,6 +99,11 @@ pub struct UiState {
     pub thumb_count: usize,
     pub active_index: usize,
     pub scroll: f32,
+    /// Прозрачность экранных стрелок [prev, next] (0..1): к 1 при hover, иначе к 0.
+    pub nav_alpha: [f32; 2],
+    /// Можно ли листать prev/next (нет первого/последнего — стрелка скрыта и инертна).
+    pub can_prev: bool,
+    pub can_next: bool,
 }
 
 impl UiState {
@@ -113,6 +120,9 @@ impl UiState {
             thumb_count: 0,
             active_index: 0,
             scroll: 0.0,
+            nav_alpha: [0.0, 0.0],
+            can_prev: false,
+            can_next: false,
         }
     }
 }
@@ -261,6 +271,27 @@ pub fn build(
         cmds.push(DrawCmd::Icon { rect: layout.btn_exif, glyph: GLYPH_INFO, size: ai, color: theme.text_secondary, font: IconFont::Tabler });
     }
 
+    // --- Экранные стрелки навигации (поверх фото; проявляются на hover) ---
+    let chev = theme::NAV_CHEVRON_SIZE * scale;
+    for (i, (rect, can, glyph)) in [
+        (layout.nav_prev, state.can_prev, GLYPH_CHEVRON_LEFT),
+        (layout.nav_next, state.can_next, GLYPH_CHEVRON_RIGHT),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let a = state.nav_alpha[i].clamp(0.0, 1.0);
+        if !can || a <= 0.01 {
+            continue;
+        }
+        let mut bg = theme.overlay_bg;
+        bg[3] *= a;
+        let mut ic = theme.text_primary;
+        ic[3] *= a;
+        cmds.push(DrawCmd::Rect { rect, color: bg, radius: 8.0 * scale, layer: RectLayer::Bg });
+        cmds.push(DrawCmd::Icon { rect, glyph, size: chev, color: ic, font: IconFont::Tabler });
+    }
+
     cmds
 }
 
@@ -280,6 +311,27 @@ mod tests {
         let thumbs = crate::ui::layout::carousel_thumb_rects(layout.carousel, &aspects, state.scroll, 1.0);
         let raw: Vec<bool> = (0..state.thumb_count).map(|i| i % 2 == 0).collect();
         build(&state, &layout, &theme, 1.0, &thumbs, &raw)
+    }
+
+    #[test]
+    fn nav_arrow_shown_on_hover_when_can_navigate() {
+        let cmds = fixture(|s| { s.can_next = true; s.nav_alpha = [0.0, 1.0]; });
+        let has_right = cmds.iter().any(|c| matches!(c, DrawCmd::Icon { glyph, .. } if *glyph == GLYPH_CHEVRON_RIGHT));
+        assert!(has_right);
+    }
+
+    #[test]
+    fn nav_arrow_hidden_when_cannot_navigate() {
+        let cmds = fixture(|s| { s.can_next = false; s.nav_alpha = [0.0, 1.0]; });
+        let has_right = cmds.iter().any(|c| matches!(c, DrawCmd::Icon { glyph, .. } if *glyph == GLYPH_CHEVRON_RIGHT));
+        assert!(!has_right);
+    }
+
+    #[test]
+    fn nav_arrow_hidden_when_alpha_zero() {
+        let cmds = fixture(|s| { s.can_prev = true; s.nav_alpha = [0.0, 0.0]; });
+        let has_left = cmds.iter().any(|c| matches!(c, DrawCmd::Icon { glyph, .. } if *glyph == GLYPH_CHEVRON_LEFT));
+        assert!(!has_left);
     }
 
     #[test]
