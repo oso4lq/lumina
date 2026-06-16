@@ -118,6 +118,43 @@ pub fn compute(win: Vec2, scale: f32, bottom_factor: f32, fullscreen: bool) -> U
     }
 }
 
+/// Геометрия EXIF popup (центрированная карточка). Всё в физ. px.
+#[derive(Clone, Copy, Debug)]
+pub struct PopupLayout {
+    pub card: Rect,
+    pub header: Rect,
+    pub close: Rect,
+    pub search: Rect,
+    pub body: Rect,
+}
+
+/// Посчитать раскладку popup для размера окна `win` и масштаба `scale`.
+pub fn popup_layout(win: Vec2, scale: f32) -> PopupLayout {
+    let margin = theme::POPUP_MARGIN * scale;
+    let w = (theme::POPUP_MAX_W * scale).min((win.x - 2.0 * margin).max(0.0));
+    let h = (theme::POPUP_MAX_H * scale).min((win.y - 2.0 * margin).max(0.0));
+    let x = (win.x - w) * 0.5;
+    let y = (win.y - h) * 0.5;
+    let card = Rect { x, y, w, h };
+
+    let hh = theme::POPUP_HEADER_H * scale;
+    let sh = theme::POPUP_SEARCH_H * scale;
+    let header = Rect { x, y, w, h: hh };
+    let close = Rect { x: x + w - hh, y, w: hh, h: hh }; // квадрат в правом верхнем углу
+    let search = Rect { x, y: y + hh, w, h: sh };
+    let body = Rect { x, y: y + hh + sh, w, h: (h - hh - sh).max(0.0) };
+
+    PopupLayout { card, header, close, search, body }
+}
+
+/// Высота одной строки тега и заголовка группы (физ. px) — для скролла/хита.
+pub fn popup_row_h(scale: f32) -> f32 {
+    theme::POPUP_ROW_H * scale
+}
+pub fn popup_group_h(scale: f32) -> f32 {
+    theme::POPUP_GROUP_H * scale
+}
+
 /// Физическая ширина миниатюры по аспекту фото (высота фиксирована).
 /// `ar` ≤ 0 трактуется как плейсхолдер (фото ещё не загружено).
 pub fn thumb_width(ar: f32, scale: f32) -> f32 {
@@ -302,6 +339,36 @@ mod tests {
         assert!(w2 > w1);
         // 1 миниатюра: pad*2 + tw = 20 + 96 = 116
         assert_eq!(w1, 116.0);
+    }
+
+    #[test]
+    fn popup_centered_and_zoned() {
+        let win = Vec2::new(1280.0, 800.0);
+        let p = popup_layout(win, 1.0);
+        // карточка центрирована
+        assert!((p.card.x + p.card.w * 0.5 - 640.0).abs() < 0.5);
+        assert!((p.card.y + p.card.h * 0.5 - 400.0).abs() < 0.5);
+        // заголовок сверху карточки
+        assert_eq!(p.header.y, p.card.y);
+        assert_eq!(p.header.h, 40.0);
+        // поиск под заголовком
+        assert_eq!(p.search.y, p.card.y + 40.0);
+        assert_eq!(p.search.h, 34.0);
+        // тело под поиском, до низа карточки
+        assert_eq!(p.body.y, p.card.y + 40.0 + 34.0);
+        assert!((p.body.y + p.body.h - (p.card.y + p.card.h)).abs() < 0.5);
+        // close-кнопка в правом верхнем углу карточки
+        assert!((p.close.x + p.close.w - (p.card.x + p.card.w)).abs() < 0.5);
+    }
+
+    #[test]
+    fn popup_clamps_to_small_window() {
+        let win = Vec2::new(400.0, 300.0);
+        let p = popup_layout(win, 1.0);
+        // карточка влезает в окно с зазором POPUP_MARGIN(40) по краям
+        assert!(p.card.x >= 39.0);
+        assert!(p.card.w <= 400.0 - 2.0 * 40.0 + 0.5);
+        assert!(p.card.h <= 300.0 - 2.0 * 40.0 + 0.5);
     }
 
     #[test]
