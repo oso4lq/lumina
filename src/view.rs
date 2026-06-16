@@ -218,15 +218,22 @@ impl ViewTransform {
     /// pan, zoom, поворотом и отражением. Картинка вращается вокруг своего центра.
     /// Для rotation=0, flip=none эквивалентно старой формуле T(origin) * S(scaled).
     fn model_matrix(&self, win: Vec2, img: Vec2) -> Mat4 {
-        let scaled = img * self.zoom; // исходные размеры × zoom
+        // rotation поддерживается только кратным 90° (см. rotate_cw/ccw); set_transform
+        // не валидирует, поэтому страхуемся в debug-сборке.
+        debug_assert!(
+            matches!(self.transform.rotation, 0 | 90 | 180 | 270),
+            "rotation должен быть кратен 90°, получено {}",
+            self.transform.rotation
+        );
+        let scaled = img * self.zoom; // размер изображения на экране (пиксели)
         let center = win * 0.5 + self.pan;
         let fx = if self.transform.flip_h { -1.0 } else { 1.0 };
         let fy = if self.transform.flip_v { -1.0 } else { 1.0 };
         let angle = (self.transform.rotation as f32).to_radians();
-        Mat4::from_translation(glam::Vec3::new(center.x, center.y, 0.0))
-            * Mat4::from_rotation_z(angle)
-            * Mat4::from_scale(glam::Vec3::new(scaled.x * fx, scaled.y * fy, 1.0))
-            * Mat4::from_translation(glam::Vec3::new(-0.5, -0.5, 0.0))
+        Mat4::from_translation(glam::Vec3::new(center.x, center.y, 0.0)) // T(center): позиционирование
+            * Mat4::from_rotation_z(angle) // R: поворот вокруг центра
+            * Mat4::from_scale(glam::Vec3::new(scaled.x * fx, scaled.y * fy, 1.0)) // S: масштаб + отражение
+            * Mat4::from_translation(glam::Vec3::new(-0.5, -0.5, 0.0)) // T(-0.5): центр quad'а в origin
     }
 
     /// Матрица: пиксели изображения → clip space, со вшитыми zoom, pan, поворотом и отражением.
@@ -237,7 +244,8 @@ impl ViewTransform {
         proj * self.model_matrix(win, img)
     }
 
-    /// Четыре угла изображения в экранных пикселях (для тестов геометрии и хитов).
+    /// Четыре угла изображения в экранных пикселях — для геометрии, хит-тестов и отладки.
+    /// Порядок соответствует UV-углам unit-quad ДО поворота: (0,0), (1,0), (0,1), (1,1).
     pub fn screen_quad(&self, win: Vec2, img: Vec2) -> [Vec2; 4] {
         let m = self.model_matrix(win, img);
         let corners = [
@@ -345,6 +353,7 @@ mod tests {
 
     /// Точка изображения (в пикселях картинки) под экранным курсором —
     /// с учётом центрирования матрицей: origin = (win - img*zoom)/2 + pan.
+    /// Только для rotation=0/flip=none (поворот не учитывается).
     fn image_point_under(v: &ViewTransform, win: Vec2, img: Vec2, cursor: Vec2) -> Vec2 {
         let origin = (win - img * v.zoom()) * 0.5 + v.pan();
         (cursor - origin) / v.zoom()
