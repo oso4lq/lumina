@@ -74,6 +74,36 @@ pub fn get(tags: &ExifTags, group: &str, tag: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
+/// Группы тегов, доступные на запись через exiftool. Остальные (File/Composite/
+/// ExifTool/ICC_Profile/…) — вычисляемые/служебные, редактирование запрещено.
+pub const WRITABLE_GROUPS: &[&str] = &["EXIF", "XMP", "IPTC", "GPS"];
+
+/// Можно ли редактировать теги этой группы.
+pub fn is_editable(group: &str) -> bool {
+    WRITABLE_GROUPS.contains(&group)
+}
+
+/// Операция над тегом для записи exiftool.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TagEdit {
+    Set { group: String, tag: String, value: String },
+    Delete { group: String, tag: String },
+    DeleteAllGps,
+}
+
+/// Набор правок → аргументы exiftool (без пути; путь добавляет write::write_edits).
+/// `Set` → `-Group:Tag=value`; `Delete` → `-Group:Tag=`; `DeleteAllGps` → `-gps:all=`.
+pub fn edits_to_args(edits: &[TagEdit]) -> Vec<String> {
+    edits
+        .iter()
+        .map(|e| match e {
+            TagEdit::Set { group, tag, value } => format!("-{group}:{tag}={value}"),
+            TagEdit::Delete { group, tag } => format!("-{group}:{tag}="),
+            TagEdit::DeleteAllGps => "-gps:all=".to_string(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +149,40 @@ mod tests {
         let t = parse(r#"[{"SourceFile":"a","Weird":"v"}]"#);
         assert_eq!(t.groups.len(), 1);
         assert_eq!(t.groups[0].name, "Other");
+    }
+
+    #[test]
+    fn editable_groups() {
+        assert!(is_editable("EXIF"));
+        assert!(is_editable("XMP"));
+        assert!(is_editable("IPTC"));
+        assert!(is_editable("GPS"));
+        assert!(!is_editable("File"));
+        assert!(!is_editable("Composite"));
+        assert!(!is_editable("ExifTool"));
+        assert!(!is_editable("ICC_Profile"));
+    }
+
+    #[test]
+    fn edits_to_args_set_delete_gps() {
+        let edits = vec![
+            TagEdit::Set { group: "EXIF".into(), tag: "Artist".into(), value: "Jane".into() },
+            TagEdit::Delete { group: "XMP".into(), tag: "Rating".into() },
+            TagEdit::DeleteAllGps,
+        ];
+        let args = edits_to_args(&edits);
+        assert_eq!(
+            args,
+            vec![
+                "-EXIF:Artist=Jane".to_string(),
+                "-XMP:Rating=".to_string(),
+                "-gps:all=".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn edits_to_args_empty_is_empty() {
+        assert!(edits_to_args(&[]).is_empty());
     }
 }
