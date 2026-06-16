@@ -158,21 +158,27 @@ impl ViewTransform {
     pub fn transform(&self) -> Transform {
         self.transform
     }
+
     pub fn set_transform(&mut self, t: Transform) {
         self.transform = t;
     }
+
     pub fn rotate_cw(&mut self) {
         self.transform.rotation = (self.transform.rotation + 90) % 360;
     }
+
     pub fn rotate_ccw(&mut self) {
         self.transform.rotation = (self.transform.rotation + 270) % 360;
     }
+
     pub fn flip_horizontal(&mut self) {
         self.transform.flip_h = !self.transform.flip_h;
     }
+
     pub fn flip_vertical(&mut self) {
         self.transform.flip_v = !self.transform.flip_v;
     }
+
     pub fn reset_transform(&mut self) {
         self.transform = Transform::default();
     }
@@ -263,6 +269,8 @@ mod tests {
         assert!(!v.transform().flip_h);
         v.flip_vertical();
         assert!(v.transform().flip_v);
+        v.flip_vertical();
+        assert!(!v.transform().flip_v);
     }
 
     #[test]
