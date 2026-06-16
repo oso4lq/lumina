@@ -4,6 +4,37 @@ pub const ZOOM_MIN: f32 = 0.05;
 pub const ZOOM_MAX: f32 = 32.0;
 pub const ANIM_DURATION: f32 = 0.15;
 
+/// Ручная трансформация отображения (поворот по часовой + отражения).
+/// rotation — градусы ∈ {0, 90, 180, 270}.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transform {
+    pub rotation: u16,
+    pub flip_h: bool,
+    pub flip_v: bool,
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self { rotation: 0, flip_h: false, flip_v: false }
+    }
+}
+
+impl Transform {
+    pub fn is_identity(&self) -> bool {
+        self.rotation == 0 && !self.flip_h && !self.flip_v
+    }
+
+    /// Эффективные размеры изображения на экране с учётом поворота:
+    /// для 90°/270° ширина и высота меняются местами.
+    pub fn effective_dims(&self, img: Vec2) -> Vec2 {
+        if self.rotation == 90 || self.rotation == 270 {
+            Vec2::new(img.y, img.x)
+        } else {
+            img
+        }
+    }
+}
+
 pub struct ViewTransform {
     zoom: f32,
     pan: Vec2,
@@ -13,10 +44,7 @@ pub struct ViewTransform {
     anim_elapsed: f32,
     /// Нижняя граница зума: fit-zoom (фото не делаем меньше окна). ZOOM_MIN до загрузки.
     min_zoom: f32,
-    // задел под v0.4
-    pub rotation: u8,
-    pub flip_h: bool,
-    pub flip_v: bool,
+    transform: Transform,
 }
 
 pub fn ease_out_cubic(t: f32) -> f32 {
@@ -42,9 +70,7 @@ impl ViewTransform {
             zoom_start: 1.0,
             anim_elapsed: ANIM_DURATION, // не анимируется
             min_zoom: ZOOM_MIN,
-            rotation: 0,
-            flip_h: false,
-            flip_v: false,
+            transform: Transform::default(),
         }
     }
 
@@ -129,6 +155,28 @@ impl ViewTransform {
         self.is_fit = fit;
     }
 
+    pub fn transform(&self) -> Transform {
+        self.transform
+    }
+    pub fn set_transform(&mut self, t: Transform) {
+        self.transform = t;
+    }
+    pub fn rotate_cw(&mut self) {
+        self.transform.rotation = (self.transform.rotation + 90) % 360;
+    }
+    pub fn rotate_ccw(&mut self) {
+        self.transform.rotation = (self.transform.rotation + 270) % 360;
+    }
+    pub fn flip_horizontal(&mut self) {
+        self.transform.flip_h = !self.transform.flip_h;
+    }
+    pub fn flip_vertical(&mut self) {
+        self.transform.flip_v = !self.transform.flip_v;
+    }
+    pub fn reset_transform(&mut self) {
+        self.transform = Transform::default();
+    }
+
     /// Ограничить pan так, чтобы изображение не отрывалось от краёв окна.
     /// По оси, где картинка больше окна, pan ∈ ±(scaled-win)/2 (без полей по краям).
     /// По оси, где картинка ≤ окна, pan = 0 (центрирование, перемещение запрещено).
@@ -178,6 +226,61 @@ impl Default for ViewTransform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transform_default_is_identity() {
+        let t = Transform::default();
+        assert!(t.is_identity());
+        assert_eq!(t.rotation, 0);
+    }
+
+    #[test]
+    fn rotate_cw_cycles_through_four() {
+        let mut v = ViewTransform::new();
+        v.rotate_cw();
+        assert_eq!(v.transform().rotation, 90);
+        v.rotate_cw();
+        assert_eq!(v.transform().rotation, 180);
+        v.rotate_cw();
+        assert_eq!(v.transform().rotation, 270);
+        v.rotate_cw();
+        assert_eq!(v.transform().rotation, 0); // 360 % 360
+    }
+
+    #[test]
+    fn rotate_ccw_wraps_to_270() {
+        let mut v = ViewTransform::new();
+        v.rotate_ccw();
+        assert_eq!(v.transform().rotation, 270);
+    }
+
+    #[test]
+    fn flips_toggle() {
+        let mut v = ViewTransform::new();
+        v.flip_horizontal();
+        assert!(v.transform().flip_h);
+        v.flip_horizontal();
+        assert!(!v.transform().flip_h);
+        v.flip_vertical();
+        assert!(v.transform().flip_v);
+    }
+
+    #[test]
+    fn reset_transform_restores_identity() {
+        let mut v = ViewTransform::new();
+        v.rotate_cw();
+        v.flip_horizontal();
+        v.reset_transform();
+        assert!(v.transform().is_identity());
+    }
+
+    #[test]
+    fn set_transform_roundtrips() {
+        let mut v = ViewTransform::new();
+        let t = Transform { rotation: 180, flip_h: true, flip_v: false };
+        v.set_transform(t);
+        assert_eq!(v.transform(), t);
+    }
 
     #[test]
     fn ease_bounds() {
