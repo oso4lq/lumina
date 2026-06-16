@@ -1,5 +1,6 @@
 pub mod read;
 pub mod tags;
+pub mod write;
 
 use image::DynamicImage;
 use std::path::Path;
