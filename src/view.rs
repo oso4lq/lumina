@@ -48,6 +48,9 @@ pub struct ViewTransform {
     /// Нижняя граница зума: fit-zoom (фото не делаем меньше окна). ZOOM_MIN до загрузки.
     min_zoom: f32,
     transform: Transform,
+    /// Транзиентное горизонтальное смещение фото (свайп-перелистывание).
+    /// Не клампится и не сбрасывается fit-логикой; управляется извне.
+    swipe_offset: f32,
 }
 
 pub fn ease_out_cubic(t: f32) -> f32 {
@@ -74,6 +77,7 @@ impl ViewTransform {
             anim_elapsed: ANIM_DURATION, // не анимируется
             min_zoom: ZOOM_MIN,
             transform: Transform::default(),
+            swipe_offset: 0.0,
         }
     }
 
@@ -166,6 +170,14 @@ impl ViewTransform {
         self.transform = t;
     }
 
+    pub fn swipe_offset(&self) -> f32 {
+        self.swipe_offset
+    }
+
+    pub fn set_swipe_offset(&mut self, dx: f32) {
+        self.swipe_offset = dx;
+    }
+
     pub fn rotate_cw(&mut self) {
         self.transform.rotation = (self.transform.rotation + 90) % 360;
     }
@@ -229,7 +241,7 @@ impl ViewTransform {
             self.transform.rotation
         );
         let scaled = img * self.zoom; // размер изображения на экране (пиксели)
-        let center = win * 0.5 + self.pan;
+        let center = win * 0.5 + self.pan + Vec2::new(self.swipe_offset, 0.0);
         let fx = if self.transform.flip_h { -1.0 } else { 1.0 };
         let fy = if self.transform.flip_v { -1.0 } else { 1.0 };
         let angle = (self.transform.rotation as f32).to_radians();
@@ -331,6 +343,22 @@ mod tests {
         let t = Transform { rotation: 180, flip_h: true, flip_v: false };
         v.set_transform(t);
         assert_eq!(v.transform(), t);
+    }
+
+    #[test]
+    fn swipe_offset_shifts_quad_horizontally() {
+        let win = Vec2::new(1000.0, 800.0);
+        let img = Vec2::new(400.0, 200.0);
+        let mut v = ViewTransform::new();
+        v.set_zoom_immediate(1.0);
+        let q0 = v.screen_quad(win, img);
+        v.set_swipe_offset(123.0);
+        assert_eq!(v.swipe_offset(), 123.0);
+        let q1 = v.screen_quad(win, img);
+        for i in 0..4 {
+            assert!((q1[i].x - q0[i].x - 123.0).abs() < 1e-3, "угол {i} по X");
+            assert!((q1[i].y - q0[i].y).abs() < 1e-3, "угол {i} по Y");
+        }
     }
 
     #[test]
