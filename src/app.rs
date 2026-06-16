@@ -60,6 +60,9 @@ pub struct AppState {
     pub thumb_aspects: Vec<f32>,   // аспект (w/h) миниатюры по индексу; дефолт до загрузки
     pub thumbs_in_flight: usize,   // число одновременных декодов миниатюр (троттлинг)
     pub cursor_idle: f32,          // секунды с последнего движения курсора (для fullscreen-оверлея)
+    pub swiping: bool,
+    pub swipe_press_x: f32,
+    pub swipe_anim: bool,
 }
 
 impl AppState {
@@ -86,6 +89,9 @@ impl AppState {
             thumb_aspects: Vec::new(),
             thumbs_in_flight: 0,
             cursor_idle: 0.0,
+            swiping: false,
+            swipe_press_x: 0.0,
+            swipe_anim: false,
         }
     }
 }
@@ -137,6 +143,9 @@ impl App {
             let n = files.len();
             self.state.ui.thumb_count = n;
             self.state.ui.active_index = cat.current_index();
+            let idx = cat.current_index();
+            self.state.ui.can_prev = idx > 0;
+            self.state.ui.can_next = idx + 1 < n;
             self.state.thumb_aspects = vec![theme::THUMB_DEFAULT_AR; n];
             self.state.raw_flags = files
                 .iter()
@@ -232,6 +241,21 @@ impl App {
         self.state.view.set_fit(false);
         self.state.view.animate_zoom_to(1.0);
         if let Some(w) = &self.window { w.request_redraw(); }
+    }
+
+    /// Исполнить действие, замапленное с клавиатуры (см. input::map_key).
+    fn apply_action(&mut self, action: crate::input::Action) {
+        use crate::input::Action;
+        match action {
+            Action::RotateCw => { self.state.view.rotate_cw(); self.after_transform_change(); }
+            Action::RotateCcw => { self.state.view.rotate_ccw(); self.after_transform_change(); }
+            Action::FlipH => { self.state.view.flip_horizontal(); self.after_transform_change(); }
+            Action::FlipV => { self.state.view.flip_vertical(); self.after_transform_change(); }
+            Action::ResetTransform => { self.state.view.reset_transform(); self.after_transform_change(); }
+            Action::ToggleFullscreen => self.toggle_fullscreen(),
+            Action::FitView => self.set_fit_view(),
+            Action::ActualSize => self.set_actual_size(),
+        }
     }
 
     /// После ручной трансформации: запомнить по пути, пересчитать fit/clamp, перерисовать.
@@ -527,6 +551,35 @@ impl ApplicationHandler<UserEvent> for App {
                 let animating = (f - target).abs() > 0.001;
                 self.state.ui.bottom_factor = if animating { f + (target - f) * (dt / 0.2).min(1.0) } else { target };
 
+                // экранные стрелки: альфа к 1 при hover полосы (если можно листать), иначе к 0
+                let nav_targets = [
+                    if self.state.ui.hovered == hit::Region::NavPrev && self.state.ui.can_prev { 1.0 } else { 0.0 },
+                    if self.state.ui.hovered == hit::Region::NavNext && self.state.ui.can_next { 1.0 } else { 0.0 },
+                ];
+                let mut nav_animating = false;
+                for i in 0..2 {
+                    let a = self.state.ui.nav_alpha[i];
+                    let t = nav_targets[i];
+                    if (a - t).abs() > 0.001 {
+                        self.state.ui.nav_alpha[i] = a + (t - a) * (dt / 0.12).min(1.0);
+                        nav_animating = true;
+                    } else {
+                        self.state.ui.nav_alpha[i] = t;
+                    }
+                }
+
+                // свайп: плавный откат смещения к 0, если перелистывания не случилось
+                if self.state.swipe_anim {
+                    let cur = self.state.view.swipe_offset();
+                    let next = cur + (0.0 - cur) * (dt / 0.2).min(1.0);
+                    if next.abs() < 0.5 {
+                        self.state.view.set_swipe_offset(0.0);
+                        self.state.swipe_anim = false;
+                    } else {
+                        self.state.view.set_swipe_offset(next);
+                    }
+                }
+
                 // fullscreen-оверлей: показан при движении курсора, плавно гаснет после 3 с простоя
                 let mut overlay_active = false;
                 if self.state.ui.fullscreen {
@@ -572,7 +625,7 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Err(e) = r.render(&self.state.view, &cmds, &ready) { log::warn!("render: {e}"); }
                     }
                 }
-                if self.state.view.is_animating() || animating || overlay_active {
+                if self.state.view.is_animating() || animating || overlay_active || nav_animating || self.state.swipe_anim {
                     if let Some(w) = &self.window { w.request_redraw(); }
                 }
             }
@@ -586,6 +639,10 @@ impl ApplicationHandler<UserEvent> for App {
                             self.state.view.clamp_pan(r.viewer_size(), img);
                         }
                     }
+                    if let Some(w) = &self.window { w.request_redraw(); }
+                } else if self.state.swiping {
+                    let dx = pos.x - self.state.swipe_press_x;
+                    self.state.view.set_swipe_offset(dx);
                     if let Some(w) = &self.window { w.request_redraw(); }
                 }
                 self.state.last_cursor = pos;
@@ -697,6 +754,14 @@ impl ApplicationHandler<UserEvent> for App {
                                         }
                                         return;
                                     }
+                                    hit::Region::NavPrev => {
+                                        if self.state.ui.can_prev { self.navigate(-1); }
+                                        return;
+                                    }
+                                    hit::Region::NavNext => {
+                                        if self.state.ui.can_next { self.navigate(1); }
+                                        return;
+                                    }
                                     _ => {}
                                 }
                             }
@@ -711,15 +776,21 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.state.last_click = None;
                             } else {
                                 self.state.last_click = Some((now, self.state.cursor));
-                                // pan только когда фото увеличено зумом сверх fit
+                                // pan только когда фото увеличено зумом сверх fit; иначе — свайп-перелистывание
                                 let can_pan = self.state.view.zoom() > self.state.view.min_zoom();
-                                self.state.dragging = can_pan;
                                 if can_pan {
+                                    self.state.dragging = true;
                                     if let Some(w) = &self.window {
                                         w.set_cursor(winit::window::Cursor::Icon(
                                             winit::window::CursorIcon::Grabbing,
                                         ));
                                     }
+                                } else {
+                                    // размер по умолчанию (fit) → начинаем свайп
+                                    self.state.swiping = true;
+                                    self.state.swipe_press_x = self.state.cursor.x;
+                                    self.state.swipe_anim = false;
+                                    self.state.view.set_swipe_offset(0.0);
                                 }
                             }
                         }
@@ -730,45 +801,43 @@ impl ApplicationHandler<UserEvent> for App {
                                     winit::window::CursorIcon::Default,
                                 ));
                             }
+                            if self.state.swiping {
+                                self.state.swiping = false;
+                                let dx = self.state.view.swipe_offset();
+                                let vw = self.renderer.as_ref().map(|r| r.viewer_size().x).unwrap_or(0.0);
+                                match crate::input::on_swipe_release(dx, vw) {
+                                    Some(crate::input::NavDir::Next) if self.state.ui.can_next => {
+                                        self.state.view.set_swipe_offset(0.0);
+                                        self.navigate(1);
+                                    }
+                                    Some(crate::input::NavDir::Prev) if self.state.ui.can_prev => {
+                                        self.state.view.set_swipe_offset(0.0);
+                                        self.navigate(-1);
+                                    }
+                                    _ => {
+                                        // не дотянули / край каталога → плавный откат
+                                        self.state.swipe_anim = true;
+                                        if let Some(w) = &self.window { w.request_redraw(); }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                use winit::keyboard::{Key, NamedKey};
+                use winit::keyboard::{Key, NamedKey, PhysicalKey};
                 if event.state.is_pressed() {
-                    // F / F11 / Esc — fullscreen, перехватываются первыми
+                    // NamedKey-перехваты (сами по себе раскладко-независимы).
                     match event.logical_key.as_ref() {
                         Key::Named(NamedKey::F11) => { self.toggle_fullscreen(); return; }
                         Key::Named(NamedKey::Escape) => {
                             if self.state.ui.fullscreen { self.toggle_fullscreen(); }
                             return;
                         }
-                        Key::Character(c) if c.eq_ignore_ascii_case("f") && !self.state.ctrl_down => {
-                            self.toggle_fullscreen();
-                            return;
-                        }
                         _ => {}
                     }
-                    // Трансформации (без Ctrl): R/Shift+R поворот, H/V отражение.
-                    if !self.state.ctrl_down {
-                        if let Key::Character(c) = event.logical_key.as_ref() {
-                            let handled = match c {
-                                "r" | "R" => {
-                                    if self.state.shift_down { self.state.view.rotate_ccw(); }
-                                    else { self.state.view.rotate_cw(); }
-                                    true
-                                }
-                                "h" | "H" => { self.state.view.flip_horizontal(); true }
-                                "v" | "V" => { self.state.view.flip_vertical(); true }
-                                _ => false,
-                            };
-                            if handled {
-                                self.after_transform_change();
-                                return;
-                            }
-                        }
-                    }
+                    // Навигация стрелками/Home/End.
                     let nav = match event.logical_key.as_ref() {
                         Key::Named(NamedKey::ArrowRight) => Some(crate::input::NavKey::Next),
                         Key::Named(NamedKey::ArrowLeft) => Some(crate::input::NavKey::Prev),
@@ -780,17 +849,13 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Some(n) = crate::input::on_nav_key(k).navigate {
                             self.navigate(n);
                         }
-                    } else if self.state.ctrl_down {
-                        if let Key::Character(c) = event.logical_key.as_ref() {
-                            match c {
-                                "0" => self.set_fit_view(),
-                                "1" => self.set_actual_size(),
-                                "z" | "Z" => {
-                                    self.state.view.reset_transform();
-                                    self.after_transform_change();
-                                }
-                                _ => {}
-                            }
+                        return;
+                    }
+                    // Действия по ФИЗИЧЕСКОЙ клавише (раскладко-независимо): R/H/V/F/Ctrl+Z/Ctrl+0/Ctrl+1.
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        if let Some(action) = crate::input::map_key(code, self.state.ctrl_down, self.state.shift_down) {
+                            self.apply_action(action);
+                            return;
                         }
                     }
                 }
