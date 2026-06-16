@@ -84,6 +84,12 @@ impl Decoder for RawDecoder {
         let dynimg = intermediate
             .to_dynamic_image()
             .ok_or_else(|| LuminaError::Raw(path.to_path_buf(), "develop вернул None".into()))?;
+        // rawler develop НЕ применяет ориентацию (а RawImage.orientation в 0.7.2 часто
+        // захардкожен в Normal). Берём ориентацию из EXIF файла (TIFF-based RAW парсятся
+        // kamadak-exif) и приводим развёрнутый кадр к upright.
+        // Встроенный JPEG (preview/non-Bayer) уже ориентирован камерой — там это НЕ делаем.
+        let orientation = crate::exif::read_orientation(path);
+        let dynimg = crate::exif::apply_to_image(dynimg, orientation);
         Ok(dynamic_to_decoded(dynimg))
     }
 }
@@ -121,6 +127,19 @@ mod tests {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/sample.raf");
         assert!(d.decode_preview(&path).unwrap().is_some());
+    }
+
+    // Приёмка ориентации: реальный портретный Bayer-RAW (напр. NEF/ARW/CR2), снятый
+    // вертикально, должен выйти портретным (height > width). Запускать вручную на образце.
+    // cargo test raw_portrait_is_upright -- --ignored
+    #[test]
+    #[ignore]
+    fn raw_portrait_is_upright() {
+        let d = RawDecoder;
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/portrait_bayer.nef");
+        let img = d.decode_full(&path).unwrap();
+        assert!(img.height > img.width, "ожидался портрет: {}×{}", img.width, img.height);
     }
 
     #[test]
