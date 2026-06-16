@@ -85,6 +85,16 @@ impl FolderCatalog {
             self.current = self.files.len() - 1;
         }
     }
+
+    /// Перейти к индексу. true, если индекс валиден и отличается от текущего.
+    pub fn go_to(&mut self, index: usize) -> bool {
+        if index < self.files.len() && index != self.current {
+            self.current = index;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[cfg(test)]

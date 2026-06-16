@@ -10,6 +10,28 @@ pub const TITLE_FONT_SIZE: f32 = 13.0;
 /// Кегль глифа кнопки окна (логические px).
 pub const ICON_FONT_SIZE: f32 = 10.0;
 
+/// Высота divider-полоски (логические px).
+pub const DIVIDER_HEIGHT: f32 = 22.0;
+/// Высота bottom bar при полной видимости (логические px).
+pub const BOTTOM_BAR_HEIGHT: f32 = 84.0;
+/// Ширина левой мета-зоны bottom bar (логические px).
+pub const META_WIDTH: f32 = 110.0;
+/// Ширина правой зоны кнопок действий (логические px).
+pub const ACTIONS_WIDTH: f32 = 76.0;
+/// Размер миниатюры карусели (логические px).
+pub const THUMB_W: f32 = 62.0;
+pub const THUMB_H: f32 = 64.0;
+/// Скругление миниатюры и зазор между ними (логические px).
+pub const THUMB_RADIUS: f32 = 4.0;
+pub const THUMB_GAP: f32 = 6.0;
+/// Горизонтальный внутренний отступ карусели (логические px).
+pub const CAROUSEL_PAD: f32 = 10.0;
+/// Кегли текстов bottom bar (логические px).
+pub const META_LABEL_SIZE: f32 = 9.0;
+pub const META_VALUE_SIZE: f32 = 11.0;
+pub const ACTION_ICON_SIZE: f32 = 16.0;
+pub const BADGE_FONT_SIZE: f32 = 7.0;
+
 /// sRGB-компонента (0..=255) → линейная (0..1).
 pub fn srgb_to_linear(c: u8) -> f32 {
     let s = c as f32 / 255.0;
@@ -34,6 +56,10 @@ pub struct ThemePalette {
     pub button_hover: [f32; 4],
     pub button_close_hover: [f32; 4],
     pub accent: [f32; 4],
+    pub badge_bg: [f32; 4],
+    pub divider_grip: [f32; 4],
+    pub thumb_placeholder: [f32; 4],
+    pub active_border: [f32; 4],
 }
 
 impl ThemePalette {
@@ -46,6 +72,10 @@ impl ThemePalette {
             button_hover: rgba(0xff, 0xff, 0xff, 0.10),
             button_close_hover: rgba(0xe8, 0x11, 0x23, 1.0),
             accent: rgba(0x4a, 0x9e, 0xff, 1.0),
+            badge_bg: rgba(0x00, 0x00, 0x00, 0.70),
+            divider_grip: rgba(0x3a, 0x3a, 0x40, 1.0),
+            thumb_placeholder: rgba(0x26, 0x26, 0x2c, 1.0),
+            active_border: rgba(0xff, 0xff, 0xff, 1.0),
         }
     }
 }
@@ -71,5 +101,14 @@ mod tests {
         let p = ThemePalette::dark();
         assert_eq!(p.bg_viewer[3], 1.0);
         assert!(p.button_hover[3] < 1.0); // hover полупрозрачный
+    }
+
+    #[test]
+    fn bottom_bar_constants_positive() {
+        assert!(BOTTOM_BAR_HEIGHT > THUMB_H); // миниатюра помещается + отступы
+        assert!(DIVIDER_HEIGHT > 0.0);
+        let p = ThemePalette::dark();
+        assert!(p.badge_bg[3] < 1.0); // бейдж полупрозрачный
+        assert_eq!(p.active_border, [1.0, 1.0, 1.0, 1.0]);
     }
 }

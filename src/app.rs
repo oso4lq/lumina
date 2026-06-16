@@ -1,7 +1,8 @@
 use crate::catalog::FolderCatalog;
-use crate::decoder::DecodedImage;
+use crate::decoder::{Decoder, DecodedImage, RawDecoder};
 use crate::renderer::Renderer;
-use crate::ui::scene::{self, UiState};
+use crate::thumbnail::ThumbnailStore;
+use crate::ui::scene::{self, FileMeta, UiState};
 use crate::ui::theme::{self, ThemePalette};
 use crate::ui::{hit, layout};
 use crate::view::ViewTransform;
@@ -27,6 +28,13 @@ pub enum UserEvent {
         stage: Stage,
         result: std::result::Result<DecodedImage, String>,
     },
+    Thumbnail {
+        generation: u64,
+        index: usize,
+        rgba: Vec<u8>,
+        w: u32,
+        h: u32,
+    },
 }
 
 pub struct AppState {
@@ -43,6 +51,9 @@ pub struct AppState {
     pub ui: UiState,
     pub theme: ThemePalette,
     pub scale: f32,
+    pub thumbs: ThumbnailStore,
+    pub raw_flags: Vec<bool>,      // для бейджей: RAW-файл по индексу каталога
+    pub badge_labels: Vec<String>, // текст бейджа (расширение в верхнем регистре)
 }
 
 impl AppState {
@@ -61,6 +72,9 @@ impl AppState {
             ui: UiState::new(),
             theme: ThemePalette::dark(),
             scale: 1.0,
+            thumbs: ThumbnailStore::new(256),
+            raw_flags: Vec::new(),
+            badge_labels: Vec::new(),
         }
     }
 }
@@ -98,6 +112,21 @@ impl App {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             self.state.ui.title = format!("{name} · Lumina");
             w.request_redraw();
+        }
+        // Списки каталога для карусели и активный индекс
+        if let Some(cat) = &self.state.catalog {
+            let files = cat.files();
+            let n = files.len();
+            self.state.ui.thumb_count = n;
+            self.state.ui.active_index = cat.current_index();
+            self.state.raw_flags = files
+                .iter()
+                .map(|p| RawDecoder::supports(&crate::decoder::ext_lower(p)))
+                .collect();
+            self.state.badge_labels = files
+                .iter()
+                .map(|p| p.extension().and_then(|s| s.to_str()).map(|s| s.to_uppercase()).unwrap_or_default())
+                .collect();
         }
         let ext = crate::decoder::ext_lower(&path);
         rayon::spawn(move || {
@@ -193,11 +222,87 @@ impl App {
                 self.state.catalog = Some(cat);
                 self.state.view = ViewTransform::new();
                 self.state.inited_generation = None;
+                self.state.thumbs.reset();
+                self.state.ui.scroll = 0.0;
                 self.load_current();
             }
             Err(e) => log::warn!("не удалось открыть папку для {path:?}: {e}"),
         }
     }
+
+    fn toggle_fullscreen(&mut self) {
+        self.state.ui.fullscreen = !self.state.ui.fullscreen;
+        if let Some(w) = &self.window {
+            let fs = if self.state.ui.fullscreen {
+                Some(winit::window::Fullscreen::Borderless(None))
+            } else {
+                None
+            };
+            w.set_fullscreen(fs);
+            w.request_redraw();
+        }
+        #[cfg(windows)]
+        crate::platform::windows::set_fullscreen(self.state.ui.fullscreen);
+    }
+
+    /// Перейти к файлу по индексу каталога.
+    fn navigate_to(&mut self, index: usize) {
+        let moved = if let Some(cat) = &mut self.state.catalog {
+            cat.go_to(index)
+        } else {
+            false
+        };
+        if moved {
+            self.load_current();
+        }
+    }
+
+    /// Запросить декод миниатюр для индексов окна, которых ещё нет.
+    fn request_thumbnails(&mut self, window: Vec<usize>) {
+        let Some(catalog) = &self.state.catalog else { return };
+        let pending = self.state.thumbs.take_pending(&window);
+        if pending.is_empty() {
+            return;
+        }
+        let generation = self.state.thumbs.generation;
+        let scale = self.state.scale;
+        let tw = (crate::ui::theme::THUMB_W * scale).round() as u32;
+        let th = (crate::ui::theme::THUMB_H * scale).round() as u32;
+        for index in pending {
+            let Some(path) = catalog.files().get(index) else { continue };
+            let path = path.to_path_buf();
+            let proxy = self.proxy.clone();
+            let ext = crate::decoder::ext_lower(&path);
+            rayon::spawn(move || {
+                let Some(decoder) = crate::decoder::decoder_for(&ext) else { return };
+                // источник: встроенное превью если есть, иначе полный декод
+                let decoded = match decoder.decode_preview(&path) {
+                    Ok(Some(img)) => Some(img),
+                    _ => decoder.decode_full(&path).ok(),
+                };
+                let Some(img) = decoded else {
+                    let _ = proxy.send_event(UserEvent::Thumbnail { generation, index, rgba: Vec::new(), w: 0, h: 0 });
+                    return;
+                };
+                let (rgba, w, h) = crate::app::make_thumb(&img.rgba, img.width, img.height, tw, th);
+                let _ = proxy.send_event(UserEvent::Thumbnail { generation, index, rgba, w, h });
+            });
+        }
+    }
+}
+
+/// Cover-кроп исходного RGBA и ресайз до tw×th. Возвращает (rgba, tw, th).
+pub fn make_thumb(src: &[u8], sw: u32, sh: u32, tw: u32, th: u32) -> (Vec<u8>, u32, u32) {
+    use image::{imageops, RgbaImage};
+    let tw = tw.max(1);
+    let th = th.max(1);
+    let Some(buf) = RgbaImage::from_raw(sw, sh, src.to_vec()) else {
+        return (vec![0u8; (tw * th * 4) as usize], tw, th);
+    };
+    let (cx, cy, cw, ch) = crate::thumbnail::cover_crop(sw, sh, tw, th);
+    let cropped = imageops::crop_imm(&buf, cx, cy, cw, ch).to_image();
+    let resized = imageops::resize(&cropped, tw, th, imageops::FilterType::Triangle);
+    (resized.into_raw(), tw, th)
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -270,6 +375,22 @@ impl ApplicationHandler<UserEvent> for App {
                                 self.state.view.rescale_for_new_image(win, old_img, new_img);
                             }
                         }
+                        // мета-панель текущего фото
+                        if let Some(cat) = &self.state.catalog {
+                            let path = cat.current_path();
+                            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_uppercase();
+                            let is_raw = RawDecoder::supports(&crate::decoder::ext_lower(path));
+                            let format_label = if is_raw { format!("{ext} · RAW") } else { ext };
+                            let mp = (img.width as f32 * img.height as f32) / 1_000_000.0;
+                            self.state.ui.meta = Some(FileMeta {
+                                format_label,
+                                megapixels: mp,
+                                width: img.width,
+                                height: img.height,
+                                bytes,
+                            });
+                        }
                         if let Some(w) = &self.window {
                             w.request_redraw();
                         }
@@ -279,6 +400,26 @@ impl ApplicationHandler<UserEvent> for App {
                         log::warn!("декодирование ({}) не удалось: {e}",
                             if stage == Stage::Preview { "preview" } else { "full" });
                     }
+                }
+            }
+            UserEvent::Thumbnail { generation, index, rgba, w, h } => {
+                if generation != self.state.thumbs.generation {
+                    return; // устаревшее поколение (сменилась папка)
+                }
+                let ok = !rgba.is_empty() && w > 0 && h > 0;
+                if ok {
+                    if let Some(r) = &mut self.renderer {
+                        r.set_thumbnail(index, &rgba, w, h);
+                    }
+                }
+                let freed = self.state.thumbs.mark_ready(index, ok);
+                if let Some(r) = &mut self.renderer {
+                    for i in freed {
+                        r.drop_thumbnail(i);
+                    }
+                }
+                if let Some(wnd) = &self.window {
+                    wnd.request_redraw();
                 }
             }
         }
@@ -313,18 +454,33 @@ impl ApplicationHandler<UserEvent> for App {
                 let dt = (now - self.state.last_frame).as_secs_f32();
                 self.state.last_frame = now;
                 self.state.view.tick(dt);
-                if let Some(r) = &mut self.renderer {
+                // анимация toggle bottom bar (~200 мс)
+                let target = if self.state.ui.bottom_visible { 1.0 } else { 0.0 };
+                let f = self.state.ui.bottom_factor;
+                let animating = (f - target).abs() > 0.001;
+                self.state.ui.bottom_factor = if animating { f + (target - f) * (dt / 0.2).min(1.0) } else { target };
+
+                let prep = self.renderer.as_ref().map(|r| {
                     let win = r.surface_size();
-                    let l = layout::compute(win, self.state.scale);
-                    let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale);
-                    if let Err(e) = r.render(&self.state.view, &cmds) {
-                        log::warn!("render: {e}");
+                    let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
+                    let thumb_rects = layout::carousel_thumb_rects(l.carousel, self.state.ui.thumb_count, self.state.ui.scroll, self.state.scale);
+                    (l, thumb_rects)
+                });
+                if let Some((l, thumb_rects)) = prep {
+                    let window: Vec<usize> = thumb_rects.iter().map(|(i, _)| *i).collect();
+                    self.request_thumbnails(window);
+                    let bottom_chrome = if self.state.ui.fullscreen { 0.0 } else { l.divider.h + l.bottom_bar.h };
+                    let tb = if self.state.ui.fullscreen { 0.0 } else { theme::TITLEBAR_HEIGHT * self.state.scale };
+                    let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale, &thumb_rects, &self.state.raw_flags);
+                    if let Some(r) = &mut self.renderer {
+                        r.set_bottom_chrome_height(bottom_chrome);
+                        r.set_titlebar_height(tb);
+                        let ready: Vec<(usize, crate::ui::layout::Rect)> = thumb_rects.iter().filter(|(i, _)| r.has_thumbnail(*i)).copied().collect();
+                        if let Err(e) = r.render(&self.state.view, &cmds, &ready) { log::warn!("render: {e}"); }
                     }
                 }
-                if self.state.view.is_animating() {
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
+                if self.state.view.is_animating() || animating {
+                    if let Some(w) = &self.window { w.request_redraw(); }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -341,10 +497,10 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.state.last_cursor = pos;
                 self.state.cursor = pos;
-                // hover по кнопкам titlebar
+                // hover по регионам (titlebar + bottom bar)
                 if let Some(r) = &self.renderer {
                     let win = r.surface_size();
-                    let l = layout::compute(win, self.state.scale);
+                    let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
                     let region = hit::hit(&l, win, pos, self.state.scale);
                     if region != self.state.ui.hovered {
                         self.state.ui.hovered = region;
@@ -359,20 +515,38 @@ impl ApplicationHandler<UserEvent> for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 50.0,
                 };
-                let win = self.renderer.as_ref().map(|r| r.viewer_size());
-                if let Some(win) = win {
-                    let cursor_v = self.state.cursor
-                        - glam::Vec2::new(0.0, self.state.scale * theme::TITLEBAR_HEIGHT);
-                    let out = crate::input::on_wheel(&mut self.state.view, cursor_v, win, lines);
+                let (win, region) = match &self.renderer {
+                    Some(r) => {
+                        let win = r.surface_size();
+                        let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
+                        (Some(win), hit::hit(&l, win, self.state.cursor, self.state.scale))
+                    }
+                    None => (None, hit::Region::None),
+                };
+                let over_carousel = matches!(region, hit::Region::Carousel | hit::Region::Thumbnail(_));
+                if over_carousel {
+                    // горизонтальный скролл карусели
+                    let step = 60.0 * self.state.scale;
+                    let content = crate::ui::layout::carousel_content_width(self.state.ui.thumb_count, self.state.scale);
+                    let view_w = self.renderer.as_ref().map(|r| {
+                        let win = r.surface_size();
+                        layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen).carousel.w
+                    }).unwrap_or(0.0);
+                    let max_scroll = (content - view_w).max(0.0);
+                    self.state.ui.scroll = (self.state.ui.scroll - lines * step).clamp(0.0, max_scroll);
+                    if let Some(w) = &self.window { w.request_redraw(); }
+                } else if let Some(_win) = win {
+                    // zoom как в v0.3a (курсор скорректирован на titlebar)
+                    let vw = self.renderer.as_ref().map(|r| r.viewer_size()).unwrap_or_default();
+                    let cursor_v = self.state.cursor - glam::Vec2::new(0.0, self.state.scale * theme::TITLEBAR_HEIGHT);
+                    let out = crate::input::on_wheel(&mut self.state.view, cursor_v, vw, lines);
                     if let Some(r) = &self.renderer {
                         if let Some(img) = r.image_size() {
-                            self.state.view.clamp_pan(win, img);
+                            self.state.view.clamp_pan(vw, img);
                         }
                     }
                     if out.redraw {
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
-                        }
+                        if let Some(w) = &self.window { w.request_redraw(); }
                     }
                 }
             }
@@ -381,19 +555,18 @@ impl ApplicationHandler<UserEvent> for App {
                 if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => {
-                            // клик по кнопкам titlebar имеет приоритет
-                            if let Some(r) = &self.renderer {
+                            // клики по регионам UI имеют приоритет над логикой фото
+                            let hit_info = self.renderer.as_ref().map(|r| {
                                 let win = r.surface_size();
-                                let l = layout::compute(win, self.state.scale);
-                                match hit::hit(&l, win, self.state.cursor, self.state.scale) {
-                                    hit::Region::Close => {
-                                        event_loop.exit();
-                                        return;
-                                    }
+                                let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
+                                let region = hit::hit(&l, win, self.state.cursor, self.state.scale);
+                                (l, region)
+                            });
+                            if let Some((l, region)) = hit_info {
+                                match region {
+                                    hit::Region::Close => { event_loop.exit(); return; }
                                     hit::Region::Minimize => {
-                                        if let Some(w) = &self.window {
-                                            w.set_minimized(true);
-                                        }
+                                        if let Some(w) = &self.window { w.set_minimized(true); }
                                         return;
                                     }
                                     hit::Region::Maximize => {
@@ -401,6 +574,19 @@ impl ApplicationHandler<UserEvent> for App {
                                             let m = !w.is_maximized();
                                             w.set_maximized(m);
                                             self.state.ui.maximized = m;
+                                        }
+                                        return;
+                                    }
+                                    hit::Region::ActionFullscreen => { self.toggle_fullscreen(); return; }
+                                    hit::Region::ActionExif => { return; } // инертна (v0.4)
+                                    hit::Region::Divider => {
+                                        self.state.ui.bottom_visible = !self.state.ui.bottom_visible;
+                                        if let Some(w) = &self.window { w.request_redraw(); }
+                                        return;
+                                    }
+                                    hit::Region::Carousel | hit::Region::Thumbnail(_) => {
+                                        if let Some(idx) = hit::hit_thumbnail(l.carousel, self.state.ui.thumb_count, self.state.ui.scroll, self.state.scale, self.state.cursor) {
+                                            self.navigate_to(idx);
                                         }
                                         return;
                                     }
@@ -444,6 +630,19 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 use winit::keyboard::{Key, NamedKey};
                 if event.state.is_pressed() {
+                    // F / F11 / Esc — fullscreen, перехватываются первыми
+                    match event.logical_key.as_ref() {
+                        Key::Named(NamedKey::F11) => { self.toggle_fullscreen(); return; }
+                        Key::Named(NamedKey::Escape) => {
+                            if self.state.ui.fullscreen { self.toggle_fullscreen(); }
+                            return;
+                        }
+                        Key::Character(c) if c.eq_ignore_ascii_case("f") && !self.state.ctrl_down => {
+                            self.toggle_fullscreen();
+                            return;
+                        }
+                        _ => {}
+                    }
                     let nav = match event.logical_key.as_ref() {
                         Key::Named(NamedKey::ArrowRight) => Some(crate::input::NavKey::Next),
                         Key::Named(NamedKey::ArrowLeft) => Some(crate::input::NavKey::Prev),

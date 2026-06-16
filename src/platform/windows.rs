@@ -4,7 +4,7 @@
 use crate::ui::hit::{Edge, Region};
 use crate::ui::{hit, layout};
 use glam::Vec2;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
 use windows::Win32::Graphics::Gdi::ScreenToClient;
@@ -27,6 +27,14 @@ pub fn set_scale(scale: f32) {
 
 fn scale() -> f32 {
     SCALE_X100.load(Ordering::Relaxed) as f32 / 100.0
+}
+
+/// Полноэкранный режим: в нём окно не двигают/не тянут — hit-test возвращает HTCLIENT.
+static FULLSCREEN: AtomicBool = AtomicBool::new(false);
+
+/// Сообщить wndproc состояние fullscreen.
+pub fn set_fullscreen(on: bool) {
+    FULLSCREEN.store(on, Ordering::Relaxed);
 }
 
 /// Включить нативный frameless для окна winit. Безопасно при неудаче (логирует).
@@ -85,6 +93,9 @@ unsafe extern "system" fn subclass_proc(
             LRESULT(0)
         }
         WM_NCHITTEST => {
+            if FULLSCREEN.load(Ordering::Relaxed) {
+                return LRESULT(HTCLIENT as isize);
+            }
             // Координаты курсора (экранные) → клиентские.
             let x = (lparam.0 & 0xffff) as i16 as i32;
             let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
@@ -98,7 +109,7 @@ unsafe extern "system" fn subclass_proc(
             let cursor = Vec2::new(pt.x as f32, pt.y as f32);
 
             let s = scale();
-            let l = layout::compute(win, s);
+            let l = layout::compute(win, s, 1.0, false);
             match hit::hit(&l, win, cursor, s) {
                 Region::Caption => LRESULT(HTCAPTION as isize),
                 Region::Resize(edge) => LRESULT(match edge {

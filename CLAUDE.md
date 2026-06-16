@@ -71,6 +71,15 @@ titlebar/кнопок/viewer в физ. px), `hit` (курсор→регион:
 `Renderer::render` рисует фото в viewer-viewport (под titlebar), затем UI, затем текст.
 Гард пропускает блит фото, если окно ниже titlebar (вырожденный размер) — иначе wgpu падает на set_viewport.
 
+**v0.3b — bottom bar:** `ui::layout` считает зоны divider/мета/карусель/кнопки (`compute(win, scale,
+bottom_factor, fullscreen)`); `ui::hit` — регионы bottom bar + `hit_thumbnail`; `ui::scene` эмитит хром
+bottom bar и `FileMeta`/`meta_lines`. Миниатюры: `ThumbnailStore` (`src/thumbnail.rs` — окно запроса/LRU/
+поколение/cover-кроп, юнит-тесты) + `ThumbnailLayer` (`src/renderer/thumbnail.rs` — текстура на миниатюру,
+SDF-скругление, `assets/shaders/thumb.wgsl`). Декод миниатюр — `decode_preview` иначе `decode_full` →
+ресайз через `image`, на rayon, лениво in-memory (sled-кэш — v0.5). Иконки действий — Tabler
+(`assets/fonts/tabler-icons.ttf`); кнопки окна — Segoe MDL2. Fullscreen — `winit` borderless; нативный
+флаг отключает caption/resize в `WM_NCHITTEST`.
+
 ### Платформа (`src/platform/windows.rs`)
 Нативный frameless: субклассинг wndproc, `WM_NCCALCSIZE` убирает caption (сохраняя
 WS_THICKFRAME → resize/Aero Snap/тень), `WM_NCHITTEST` мапит регионы из `ui::hit` в HT-коды
