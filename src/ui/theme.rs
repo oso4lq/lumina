@@ -16,8 +16,13 @@ pub const DIVIDER_HEIGHT: f32 = 22.0;
 pub const BOTTOM_BAR_HEIGHT: f32 = 84.0;
 /// Ширина левой мета-зоны bottom bar (логические px).
 pub const META_WIDTH: f32 = 132.0;
-/// Ширина правой зоны кнопок действий (логические px).
-pub const ACTIONS_WIDTH: f32 = 76.0;
+/// Ширина правой зоны кнопок действий (логические px). 3 кнопки: поворот/fullscreen/инфо.
+pub const ACTIONS_WIDTH: f32 = 114.0;
+/// Размер кнопки оверлейного тулбара fullscreen (логические px).
+pub const FS_BUTTON: f32 = 44.0;
+/// Отступ оверлея fullscreen от края монитора и зазор между его кнопками (логические px).
+pub const FS_OVERLAY_PAD: f32 = 16.0;
+pub const FS_OVERLAY_GAP: f32 = 8.0;
 /// Высота миниатюры карусели (логические px). Ширина — по аспекту фото.
 pub const THUMB_H: f32 = 64.0;
 /// Аспект-плейсхолдер до загрузки (ширина = высота × AR) и пределы аспекта,
@@ -66,6 +71,7 @@ pub struct ThemePalette {
     pub divider_grip: [f32; 4],
     pub thumb_placeholder: [f32; 4],
     pub active_border: [f32; 4],
+    pub overlay_bg: [f32; 4],
 }
 
 impl ThemePalette {
@@ -82,6 +88,7 @@ impl ThemePalette {
             divider_grip: rgba(0x3a, 0x3a, 0x40, 1.0),
             thumb_placeholder: rgba(0x26, 0x26, 0x2c, 1.0),
             active_border: rgba(0xff, 0xff, 0xff, 1.0),
+            overlay_bg: rgba(0x00, 0x00, 0x00, 0.45),
         }
     }
 }

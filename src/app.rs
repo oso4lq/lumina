@@ -56,6 +56,7 @@ pub struct AppState {
     pub badge_labels: Vec<String>, // текст бейджа (расширение в верхнем регистре)
     pub thumb_aspects: Vec<f32>,   // аспект (w/h) миниатюры по индексу; дефолт до загрузки
     pub thumbs_in_flight: usize,   // число одновременных декодов миниатюр (троттлинг)
+    pub cursor_idle: f32,          // секунды с последнего движения курсора (для fullscreen-оверлея)
 }
 
 impl AppState {
@@ -79,6 +80,7 @@ impl AppState {
             badge_labels: Vec::new(),
             thumb_aspects: Vec::new(),
             thumbs_in_flight: 0,
+            cursor_idle: 0.0,
         }
     }
 }
@@ -240,6 +242,9 @@ impl App {
     fn toggle_fullscreen(&mut self) {
         self.state.ui.fullscreen = !self.state.ui.fullscreen;
         let on = self.state.ui.fullscreen;
+        // при входе показываем оверлей и заводим таймер простоя (погаснет через 3 с)
+        self.state.cursor_idle = 0.0;
+        self.state.ui.fs_overlay = if on { 1.0 } else { 0.0 };
         // Сообщаем wndproc состояние ДО set_fullscreen, чтобы WM_NCCALCSIZE во время
         // перехода сразу отдавал согласованный размер клиента (иначе рассинхрон → resize-петля).
         #[cfg(windows)]
@@ -488,6 +493,21 @@ impl ApplicationHandler<UserEvent> for App {
                 let animating = (f - target).abs() > 0.001;
                 self.state.ui.bottom_factor = if animating { f + (target - f) * (dt / 0.2).min(1.0) } else { target };
 
+                // fullscreen-оверлей: показан при движении курсора, плавно гаснет после 3 с простоя
+                let mut overlay_active = false;
+                if self.state.ui.fullscreen {
+                    self.state.cursor_idle += dt;
+                    if self.state.cursor_idle >= 3.0 {
+                        // плавное гашение (~0.4 с)
+                        self.state.ui.fs_overlay = (self.state.ui.fs_overlay - dt / 0.4).max(0.0);
+                    }
+                    // активно (нужны перерисовки), пока идёт отсчёт до 3 с или продолжается фейд
+                    overlay_active = self.state.cursor_idle < 3.0 || self.state.ui.fs_overlay > 0.0;
+                } else {
+                    self.state.ui.fs_overlay = 0.0;
+                    self.state.cursor_idle = 0.0;
+                }
+
                 let prep = self.renderer.as_ref().map(|r| {
                     let win = r.surface_size();
                     let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
@@ -518,7 +538,7 @@ impl ApplicationHandler<UserEvent> for App {
                         if let Err(e) = r.render(&self.state.view, &cmds, &ready) { log::warn!("render: {e}"); }
                     }
                 }
-                if self.state.view.is_animating() || animating {
+                if self.state.view.is_animating() || animating || overlay_active {
                     if let Some(w) = &self.window { w.request_redraw(); }
                 }
             }
@@ -536,6 +556,12 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.state.last_cursor = pos;
                 self.state.cursor = pos;
+                // движение курсора → мгновенно показать fullscreen-оверлей и сбросить таймер простоя
+                if self.state.ui.fullscreen {
+                    self.state.cursor_idle = 0.0;
+                    self.state.ui.fs_overlay = 1.0;
+                    if let Some(w) = &self.window { w.request_redraw(); }
+                }
                 // hover по регионам (titlebar + bottom bar)
                 if let Some(r) = &self.renderer {
                     let win = r.surface_size();
@@ -617,7 +643,11 @@ impl ApplicationHandler<UserEvent> for App {
                                         return;
                                     }
                                     hit::Region::ActionFullscreen => { self.toggle_fullscreen(); return; }
-                                    hit::Region::ActionExif => { return; } // инертна (v0.4)
+                                    // оверлейные кнопки fullscreen — только пока тулбар видим
+                                    hit::Region::FullscreenExit if self.state.ui.fs_overlay > 0.1 => { self.toggle_fullscreen(); return; }
+                                    hit::Region::SlideshowPlay if self.state.ui.fs_overlay > 0.1 => { return; } // инертна (slideshow — v0.6)
+                                    hit::Region::ActionExif => { return; }    // инертна (EXIF — v0.4)
+                                    hit::Region::ActionRotate => { return; }  // инертна (поворот — v0.4)
                                     hit::Region::Divider => {
                                         self.state.ui.bottom_visible = !self.state.ui.bottom_visible;
                                         if let Some(w) = &self.window { w.request_redraw(); }

@@ -19,6 +19,9 @@ pub const TABLER_FONT_FAMILY: &str = "tabler-icons";
 /// Глифы Tabler (кодпоинты из tabler-icons.css 3.44.0).
 pub const GLYPH_FULLSCREEN: char = '\u{EAEA}'; // ti-maximize
 pub const GLYPH_INFO: char = '\u{EAC5}';       // ti-info-circle
+pub const GLYPH_ROTATE_CW: char = '\u{EB15}';  // ti-rotate-clockwise
+pub const GLYPH_PLAY: char = '\u{ED46}';       // ti-player-play
+pub const GLYPH_FS_EXIT: char = '\u{EA29}';    // ti-arrows-minimize (выход из fullscreen)
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IconFont {
@@ -87,6 +90,9 @@ pub struct UiState {
     pub bottom_visible: bool, // цель toggle
     pub bottom_factor: f32,   // анимированная видимость 0..1
     pub fullscreen: bool,
+    /// Прозрачность оверлейного тулбара fullscreen (0..1): 1 при движении курсора,
+    /// плавно гаснет до 0 после простоя. Вне fullscreen — 0.
+    pub fs_overlay: f32,
     pub meta: Option<FileMeta>,
     pub thumb_count: usize,
     pub active_index: usize,
@@ -102,6 +108,7 @@ impl UiState {
             bottom_visible: true,
             bottom_factor: 1.0,
             fullscreen: false,
+            fs_overlay: 0.0,
             meta: None,
             thumb_count: 0,
             active_index: 0,
@@ -128,8 +135,29 @@ pub fn build(
 ) -> Vec<DrawCmd> {
     let mut cmds = Vec::new();
 
-    // В fullscreen хрома нет — только фон viewer задаёт clear, команд не нужно.
+    // В fullscreen хрома нет, но есть оверлейный тулбар: [play] [выход] справа-сверху.
+    // Прозрачность всего тулбара — fs_overlay (показ при движении, плавное гашение).
     if state.fullscreen {
+        let a = state.fs_overlay.clamp(0.0, 1.0);
+        if a <= 0.01 {
+            return cmds; // оверлей погашен — ничего не рисуем (и хит-тест в app заблокирован)
+        }
+        let ai = theme::ACTION_ICON_SIZE * scale;
+        for (rect, glyph, region) in [
+            (layout.btn_fs_play, GLYPH_PLAY, Region::SlideshowPlay),
+            (layout.btn_fs_exit, GLYPH_FS_EXIT, Region::FullscreenExit),
+        ] {
+            // полупрозрачная подложка (ярче при hover), умноженная на прозрачность тулбара
+            let mut bg = theme.overlay_bg;
+            if state.hovered == region {
+                bg[3] = (bg[3] + 0.25).min(1.0);
+            }
+            bg[3] *= a;
+            let mut ic = theme.text_primary;
+            ic[3] *= a;
+            cmds.push(DrawCmd::Rect { rect, color: bg, radius: 6.0 * scale, layer: RectLayer::Bg });
+            cmds.push(DrawCmd::Icon { rect, glyph, size: ai, color: ic, font: IconFont::Tabler });
+        }
         return cmds;
     }
 
@@ -216,7 +244,10 @@ pub fn build(
         }
         // (текст бейджа — в Task 9, когда есть расширения файлов; здесь только фон-плашка)
 
-        // Кнопки действий
+        // Кнопки действий: [поворот] [fullscreen] [инфо].
+        if state.hovered == Region::ActionRotate {
+            cmds.push(DrawCmd::Rect { rect: layout.btn_rotate, color: theme.button_hover, radius: 0.0, layer: RectLayer::Bg });
+        }
         if state.hovered == Region::ActionFullscreen {
             cmds.push(DrawCmd::Rect { rect: layout.btn_fullscreen, color: theme.button_hover, radius: 0.0, layer: RectLayer::Bg });
         }
@@ -224,8 +255,9 @@ pub fn build(
             cmds.push(DrawCmd::Rect { rect: layout.btn_exif, color: theme.button_hover, radius: 0.0, layer: RectLayer::Bg });
         }
         let ai = theme::ACTION_ICON_SIZE * scale;
+        // Поворот и EXIF инертны (v0.4) → тусклый цвет; fullscreen активен → яркий.
+        cmds.push(DrawCmd::Icon { rect: layout.btn_rotate, glyph: GLYPH_ROTATE_CW, size: ai, color: theme.text_secondary, font: IconFont::Tabler });
         cmds.push(DrawCmd::Icon { rect: layout.btn_fullscreen, glyph: GLYPH_FULLSCREEN, size: ai, color: theme.text_primary, font: IconFont::Tabler });
-        // EXIF инертна → тусклый цвет
         cmds.push(DrawCmd::Icon { rect: layout.btn_exif, glyph: GLYPH_INFO, size: ai, color: theme.text_secondary, font: IconFont::Tabler });
     }
 
@@ -251,9 +283,19 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_emits_no_chrome() {
-        let cmds = fixture(|s| s.fullscreen = true);
-        assert!(cmds.is_empty());
+    fn fullscreen_emits_only_overlay() {
+        let cmds = fixture(|s| { s.fullscreen = true; s.fs_overlay = 1.0; });
+        // нет хрома (titlebar bg высотой 32 отсутствует)
+        let has_titlebar = cmds.iter().any(|c| matches!(c, DrawCmd::Rect { rect, .. } if rect.h == 32.0));
+        assert!(!has_titlebar);
+        // ровно 2 оверлейных глифа: play + выход
+        let icons: Vec<char> = cmds.iter().filter_map(|c| match c {
+            DrawCmd::Icon { glyph, font: IconFont::Tabler, .. } => Some(*glyph),
+            _ => None,
+        }).collect();
+        assert_eq!(icons.len(), 2);
+        assert!(icons.contains(&GLYPH_PLAY));
+        assert!(icons.contains(&GLYPH_FS_EXIT));
     }
 
     #[test]
@@ -264,10 +306,10 @@ mod tests {
     }
 
     #[test]
-    fn two_action_icons_tabler() {
+    fn three_action_icons_tabler() {
         let cmds = fixture(|_| {});
         let tab = cmds.iter().filter(|c| matches!(c, DrawCmd::Icon { font: IconFont::Tabler, .. })).count();
-        assert_eq!(tab, 2);
+        assert_eq!(tab, 3); // поворот + fullscreen + инфо
     }
 
     #[test]

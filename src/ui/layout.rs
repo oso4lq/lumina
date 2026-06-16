@@ -29,8 +29,12 @@ pub struct UiLayout {
     pub bottom_bar: Rect,
     pub meta: Rect,
     pub carousel: Rect,
+    pub btn_rotate: Rect,
     pub btn_fullscreen: Rect,
     pub btn_exif: Rect,
+    /// Кнопки оверлейного тулбара fullscreen (нулевые вне fullscreen).
+    pub btn_fs_play: Rect,
+    pub btn_fs_exit: Rect,
 }
 
 /// Пустой прямоугольник.
@@ -40,6 +44,13 @@ const ZERO: Rect = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
 /// В fullscreen весь хром нулевой, viewer = всё окно.
 pub fn compute(win: Vec2, scale: f32, bottom_factor: f32, fullscreen: bool) -> UiLayout {
     if fullscreen {
+        // Оверлейный тулбар справа-сверху: [play] [выход].
+        let b = theme::FS_BUTTON * scale;
+        let pad = theme::FS_OVERLAY_PAD * scale;
+        let gap = theme::FS_OVERLAY_GAP * scale;
+        let y = pad;
+        let exit_x = win.x - pad - b;
+        let play_x = exit_x - gap - b;
         return UiLayout {
             titlebar: ZERO,
             btn_min: ZERO,
@@ -51,8 +62,11 @@ pub fn compute(win: Vec2, scale: f32, bottom_factor: f32, fullscreen: bool) -> U
             bottom_bar: ZERO,
             meta: ZERO,
             carousel: ZERO,
+            btn_rotate: ZERO,
             btn_fullscreen: ZERO,
             btn_exif: ZERO,
+            btn_fs_play: Rect { x: play_x, y, w: b, h: b },
+            btn_fs_exit: Rect { x: exit_x, y, w: b, h: b },
         };
     }
 
@@ -81,13 +95,16 @@ pub fn compute(win: Vec2, scale: f32, bottom_factor: f32, fullscreen: bool) -> U
         h: bottom_h,
     };
     let actions_x = win.x - actions_w;
-    let half = actions_w * 0.5;
-    let btn_fullscreen = Rect { x: actions_x, y: bottom_bar.y, w: half, h: bottom_h };
-    let btn_exif = Rect { x: actions_x + half, y: bottom_bar.y, w: half, h: bottom_h };
+    let third = actions_w / 3.0;
+    let btn_rotate = Rect { x: actions_x, y: bottom_bar.y, w: third, h: bottom_h };
+    let btn_fullscreen = Rect { x: actions_x + third, y: bottom_bar.y, w: third, h: bottom_h };
+    let btn_exif = Rect { x: actions_x + 2.0 * third, y: bottom_bar.y, w: third, h: bottom_h };
 
     UiLayout {
         titlebar, btn_min, btn_max, btn_close, title, viewer,
-        divider, bottom_bar, meta, carousel, btn_fullscreen, btn_exif,
+        divider, bottom_bar, meta, carousel,
+        btn_rotate, btn_fullscreen, btn_exif,
+        btn_fs_play: ZERO, btn_fs_exit: ZERO,
     }
 }
 
@@ -176,11 +193,25 @@ mod tests {
         assert_eq!(l.meta.w, 132.0);
         assert_eq!(l.meta.x, 0.0);
         assert_eq!(l.carousel.x, 132.0);
-        assert_eq!(l.carousel.w, 1280.0 - 132.0 - 76.0);
-        // две кнопки по 38 в правой зоне 76
+        assert_eq!(l.carousel.w, 1280.0 - 132.0 - 114.0);
+        // три кнопки по 38 в правой зоне 114: поворот/fullscreen/инфо
+        assert_eq!(l.btn_rotate.x, 1280.0 - 114.0);
+        assert_eq!(l.btn_rotate.w, 38.0);
         assert_eq!(l.btn_fullscreen.x, 1280.0 - 76.0);
-        assert_eq!(l.btn_fullscreen.w, 38.0);
         assert_eq!(l.btn_exif.x, 1280.0 - 38.0);
+        // оверлейные кнопки fullscreen вне fullscreen — нулевые
+        assert_eq!(l.btn_fs_exit, ZERO);
+        assert_eq!(l.btn_fs_play, ZERO);
+    }
+
+    #[test]
+    fn fullscreen_overlay_buttons_top_right() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, true);
+        // [play] [exit] справа-сверху, размер 44, отступ 16, зазор 8
+        assert_eq!(l.btn_fs_exit, Rect { x: 1280.0 - 16.0 - 44.0, y: 16.0, w: 44.0, h: 44.0 });
+        assert_eq!(l.btn_fs_play, Rect { x: 1280.0 - 16.0 - 44.0 - 8.0 - 44.0, y: 16.0, w: 44.0, h: 44.0 });
+        // прочий хром нулевой
+        assert_eq!(l.btn_rotate, ZERO);
     }
 
     #[test]

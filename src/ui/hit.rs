@@ -26,8 +26,11 @@ pub enum Region {
     Divider,
     Carousel,
     Thumbnail(usize),
+    ActionRotate,
     ActionFullscreen,
     ActionExif,
+    FullscreenExit,
+    SlideshowPlay,
 }
 
 /// Ширина зоны захвата для ресайза у краёв окна (логические px).
@@ -66,6 +69,16 @@ pub fn hit(layout: &UiLayout, win: Vec2, cursor: Vec2, scale: f32) -> Region {
     }
     if layout.titlebar.contains(cursor) {
         return Region::Caption;
+    }
+    // Оверлейные кнопки fullscreen (нулевые вне fullscreen — contains() ложно).
+    if layout.btn_fs_exit.contains(cursor) {
+        return Region::FullscreenExit;
+    }
+    if layout.btn_fs_play.contains(cursor) {
+        return Region::SlideshowPlay;
+    }
+    if layout.btn_rotate.contains(cursor) {
+        return Region::ActionRotate;
     }
     if layout.btn_fullscreen.contains(cursor) {
         return Region::ActionFullscreen;
@@ -197,5 +210,22 @@ mod tests {
     fn viewer_still_none() {
         let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
         assert_eq!(hit(&l, Vec2::new(1280.0, 800.0), Vec2::new(640.0, 300.0), 1.0), Region::None);
+    }
+
+    #[test]
+    fn rotate_button_region() {
+        let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
+        let c = Vec2::new(l.btn_rotate.x + 19.0, l.btn_rotate.y + 42.0);
+        assert_eq!(hit(&l, Vec2::new(1280.0, 800.0), c, 1.0), Region::ActionRotate);
+    }
+
+    #[test]
+    fn fullscreen_overlay_regions() {
+        let win = Vec2::new(1280.0, 800.0);
+        let l = compute(win, 1.0, 1.0, true);
+        let ce = Vec2::new(l.btn_fs_exit.x + 22.0, l.btn_fs_exit.y + 22.0);
+        let cp = Vec2::new(l.btn_fs_play.x + 22.0, l.btn_fs_play.y + 22.0);
+        assert_eq!(hit(&l, win, ce, 1.0), Region::FullscreenExit);
+        assert_eq!(hit(&l, win, cp, 1.0), Region::SlideshowPlay);
     }
 }
