@@ -1,5 +1,6 @@
 use crate::view::ViewTransform;
 use glam::Vec2;
+use winit::keyboard::KeyCode;
 
 /// Что приложение должно сделать после обработки ввода.
 #[derive(Debug, Default, PartialEq)]
@@ -42,6 +43,61 @@ pub enum NavKey {
     Last,
 }
 
+/// Действие, вызванное физической клавишей (раскладко-независимо).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    RotateCw,
+    RotateCcw,
+    FlipH,
+    FlipV,
+    ResetTransform,
+    ToggleFullscreen,
+    FitView,
+    ActualSize,
+}
+
+/// Маппинг физической клавиши + модификаторов в действие.
+/// Матчинг по позиции клавиши (KeyCode), а не по символу — работает на любой
+/// раскладке (кириллица К/Р/М/… и др.).
+pub fn map_key(code: KeyCode, ctrl: bool, shift: bool) -> Option<Action> {
+    match (code, ctrl) {
+        (KeyCode::KeyR, false) => Some(if shift { Action::RotateCcw } else { Action::RotateCw }),
+        (KeyCode::KeyH, false) => Some(Action::FlipH),
+        (KeyCode::KeyV, false) => Some(Action::FlipV),
+        (KeyCode::KeyF, false) => Some(Action::ToggleFullscreen),
+        (KeyCode::KeyZ, true) => Some(Action::ResetTransform),
+        (KeyCode::Digit0, true) => Some(Action::FitView),
+        (KeyCode::Digit1, true) => Some(Action::ActualSize),
+        _ => None,
+    }
+}
+
+/// Направление перелистывания свайпом.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavDir {
+    Prev,
+    Next,
+}
+
+/// Доля ширины viewer, после которой свайп считается перелистыванием.
+pub const SWIPE_THRESHOLD_FRAC: f32 = 0.15;
+
+/// Решение свайпа по горизонтальному смещению `dx` и ширине viewer.
+/// Тянули влево (dx < -порог) → Next; вправо (dx > порог) → Prev; иначе None.
+pub fn on_swipe_release(dx: f32, viewer_w: f32) -> Option<NavDir> {
+    if viewer_w <= 0.0 {
+        return None;
+    }
+    let threshold = SWIPE_THRESHOLD_FRAC * viewer_w;
+    if dx <= -threshold {
+        Some(NavDir::Next)
+    } else if dx >= threshold {
+        Some(NavDir::Prev)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,5 +127,56 @@ mod tests {
         assert_eq!(on_nav_key(NavKey::Prev).navigate, Some(-1));
         assert_eq!(on_nav_key(NavKey::First).navigate, Some(i32::MIN));
         assert_eq!(on_nav_key(NavKey::Last).navigate, Some(i32::MAX));
+    }
+
+    #[test]
+    fn map_key_rotate_cw_and_ccw() {
+        use winit::keyboard::KeyCode;
+        assert_eq!(map_key(KeyCode::KeyR, false, false), Some(Action::RotateCw));
+        assert_eq!(map_key(KeyCode::KeyR, false, true), Some(Action::RotateCcw));
+    }
+
+    #[test]
+    fn map_key_flips_and_fullscreen() {
+        use winit::keyboard::KeyCode;
+        assert_eq!(map_key(KeyCode::KeyH, false, false), Some(Action::FlipH));
+        assert_eq!(map_key(KeyCode::KeyV, false, false), Some(Action::FlipV));
+        assert_eq!(map_key(KeyCode::KeyF, false, false), Some(Action::ToggleFullscreen));
+        // F под Ctrl — не fullscreen
+        assert_eq!(map_key(KeyCode::KeyF, true, false), None);
+    }
+
+    #[test]
+    fn map_key_ctrl_combos() {
+        use winit::keyboard::KeyCode;
+        assert_eq!(map_key(KeyCode::KeyZ, true, false), Some(Action::ResetTransform));
+        assert_eq!(map_key(KeyCode::KeyZ, false, false), None); // Z без Ctrl — ничего
+        assert_eq!(map_key(KeyCode::Digit0, true, false), Some(Action::FitView));
+        assert_eq!(map_key(KeyCode::Digit1, true, false), Some(Action::ActualSize));
+    }
+
+    #[test]
+    fn map_key_unknown_is_none() {
+        use winit::keyboard::KeyCode;
+        assert_eq!(map_key(KeyCode::KeyA, false, false), None);
+        assert_eq!(map_key(KeyCode::KeyR, true, false), None); // R под Ctrl — не поворот
+    }
+
+    #[test]
+    fn swipe_past_threshold_navigates() {
+        // порог = 15% ширины. viewer_w=1000 → порог 150.
+        assert_eq!(on_swipe_release(-200.0, 1000.0), Some(NavDir::Next)); // тянули влево → следующее
+        assert_eq!(on_swipe_release(200.0, 1000.0), Some(NavDir::Prev));  // тянули вправо → предыдущее
+    }
+
+    #[test]
+    fn swipe_below_threshold_is_none() {
+        assert_eq!(on_swipe_release(100.0, 1000.0), None);
+        assert_eq!(on_swipe_release(-149.0, 1000.0), None);
+    }
+
+    #[test]
+    fn swipe_zero_width_is_none() {
+        assert_eq!(on_swipe_release(500.0, 0.0), None);
     }
 }
