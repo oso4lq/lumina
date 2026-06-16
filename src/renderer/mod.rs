@@ -166,7 +166,7 @@ impl Renderer {
             let ch = (self.thumb_clip.y + self.thumb_clip.h).min(screen[1]) - cy;
             if cw >= 1.0 && ch >= 1.0 {
                 pass.set_scissor_rect(cx as u32, cy as u32, cw as u32, ch as u32);
-                self.thumbs.draw(&self.ctx.queue, &mut pass, thumb_scale, thumb_rects);
+                self.thumbs.draw(&self.ctx.device, &self.ctx.queue, &mut pass, thumb_scale, thumb_rects);
                 // вернуть scissor на весь экран для UI/текста
                 pass.set_scissor_rect(0, 0, self.ctx.config.width, self.ctx.config.height);
             }

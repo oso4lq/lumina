@@ -193,19 +193,49 @@ impl ThumbnailLayer {
     }
 
     /// Нарисовать видимые готовые миниатюры в открытый pass.
-    pub fn draw(&self, queue: &wgpu::Queue, pass: &mut wgpu::RenderPass, scale: f32, rects: &[(usize, Rect)]) {
+    /// Все инстансы пишутся в буфер ОДНОЙ записью (write_buffer применяется в начале
+    /// сабмита, не упорядочен с draw — поэтому пер-draw перезапись давала стопку в одной точке),
+    /// а отрисовка идёт через диапазон инстансов `i..i+1` со сменой bind group на текстуру.
+    pub fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &mut wgpu::RenderPass,
+        scale: f32,
+        rects: &[(usize, Rect)],
+    ) {
         let radius = theme::THUMB_RADIUS * scale;
-        pass.set_pipeline(&self.pipeline);
+        let mut insts: Vec<Inst> = Vec::new();
+        let mut order: Vec<usize> = Vec::new();
         for (idx, r) in rects {
             if r.w < 1.0 || r.h < 1.0 {
                 continue;
             }
+            if !self.thumbs.contains_key(idx) {
+                continue;
+            }
+            insts.push(Inst { pos: [r.x, r.y], size: [r.w, r.h], radius, _pad: [0.0; 3] });
+            order.push(*idx);
+        }
+        if insts.is_empty() {
+            return;
+        }
+        let needed = (insts.len() * std::mem::size_of::<Inst>()) as u64;
+        if self.inst_buf.size() < needed {
+            self.inst_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("thumb-inst"),
+                size: needed.next_power_of_two(),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        queue.write_buffer(&self.inst_buf, 0, bytemuck::cast_slice(&insts));
+        pass.set_pipeline(&self.pipeline);
+        pass.set_vertex_buffer(0, self.inst_buf.slice(..));
+        for (i, idx) in order.iter().enumerate() {
             let Some(thumb) = self.thumbs.get(idx) else { continue };
-            let inst = Inst { pos: [r.x, r.y], size: [r.w, r.h], radius, _pad: [0.0; 3] };
-            queue.write_buffer(&self.inst_buf, 0, bytemuck::bytes_of(&inst));
             pass.set_bind_group(0, &thumb.bind_group, &[]);
-            pass.set_vertex_buffer(0, self.inst_buf.slice(..));
-            pass.draw(0..4, 0..1);
+            pass.draw(0..4, i as u32..i as u32 + 1);
         }
     }
 }

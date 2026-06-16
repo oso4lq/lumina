@@ -79,6 +79,11 @@ unsafe extern "system" fn subclass_proc(
             // Расширяем клиентскую область на весь caption.
             // В maximized-режиме компенсируем невидимые рамки, иначе контент срежется.
             let params = &mut *(lparam.0 as *mut NCCALCSIZE_PARAMS);
+            // В fullscreen клиент = всё окно (монитор), без рамочных отступов —
+            // иначе maximized-инсет ниже срезает края и сквозь них виден рабочий стол.
+            if FULLSCREEN.load(Ordering::Relaxed) {
+                return LRESULT(0);
+            }
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
             if style & WS_MAXIMIZE.0 != 0 {
                 // Системные метрики рамки maximized-окна.
