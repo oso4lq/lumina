@@ -103,6 +103,30 @@ pub fn hit(layout: &UiLayout, win: Vec2, cursor: Vec2, scale: f32) -> Region {
     Region::None
 }
 
+/// Регион внутри открытого EXIF popup. `Outside` — клик вне карточки (закрыть).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupRegion {
+    Close,
+    Search,
+    Body,
+    Outside,
+}
+
+/// Хит-тест popup. Вызывается app'ом ПЕРВЫМ, когда popup открыт.
+pub fn hit_popup(win: Vec2, scale: f32, cursor: Vec2) -> PopupRegion {
+    let p = crate::ui::layout::popup_layout(win, scale);
+    if p.close.contains(cursor) {
+        return PopupRegion::Close;
+    }
+    if p.search.contains(cursor) {
+        return PopupRegion::Search;
+    }
+    if p.body.contains(cursor) {
+        return PopupRegion::Body;
+    }
+    PopupRegion::Outside
+}
+
 /// Индекс миниатюры под курсором, если попал по одной из видимых.
 pub fn hit_thumbnail(
     carousel: crate::ui::layout::Rect,
@@ -248,6 +272,23 @@ mod tests {
         let l = compute(Vec2::new(1280.0, 800.0), 1.0, 1.0, false);
         let c = Vec2::new(l.btn_rotate.x + 19.0, l.btn_rotate.y + 42.0);
         assert_eq!(hit(&l, Vec2::new(1280.0, 800.0), c, 1.0), Region::ActionRotate);
+    }
+
+    #[test]
+    fn popup_close_search_body_outside() {
+        let win = Vec2::new(1280.0, 800.0);
+        let p = crate::ui::layout::popup_layout(win, 1.0);
+        // центр close
+        let cc = Vec2::new(p.close.x + p.close.w * 0.5, p.close.y + p.close.h * 0.5);
+        assert_eq!(hit_popup(win, 1.0, cc), PopupRegion::Close);
+        // центр поиска
+        let cs = Vec2::new(p.search.x + 30.0, p.search.y + p.search.h * 0.5);
+        assert_eq!(hit_popup(win, 1.0, cs), PopupRegion::Search);
+        // центр тела
+        let cb = Vec2::new(p.body.x + 30.0, p.body.y + 30.0);
+        assert_eq!(hit_popup(win, 1.0, cb), PopupRegion::Body);
+        // угол окна — вне карточки
+        assert_eq!(hit_popup(win, 1.0, Vec2::new(5.0, 5.0)), PopupRegion::Outside);
     }
 
     #[test]
