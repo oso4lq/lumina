@@ -120,21 +120,6 @@ pub enum PopupRegion {
     ConfirmKeep,
 }
 
-/// Хит-тест popup. Вызывается app'ом ПЕРВЫМ, когда popup открыт.
-pub fn hit_popup(win: Vec2, scale: f32, cursor: Vec2) -> PopupRegion {
-    let p = crate::ui::layout::popup_layout(win, scale);
-    if p.close.contains(cursor) {
-        return PopupRegion::Close;
-    }
-    if p.search.contains(cursor) {
-        return PopupRegion::Search;
-    }
-    if p.body.contains(cursor) {
-        return PopupRegion::Body;
-    }
-    PopupRegion::Outside
-}
-
 /// Хит-тест popup в режиме редактирования (часть 2): футер, действия строк, GPS-delete-all.
 /// `confirm` — показан ли бар подтверждения закрытия (тогда футер = три кнопки confirm).
 /// Приоритет: confirm/футер → действия строки → Search → Body → Close → Outside.
@@ -359,17 +344,18 @@ mod tests {
     fn popup_close_search_body_outside() {
         let win = Vec2::new(1280.0, 800.0);
         let p = crate::ui::layout::popup_layout(win, 1.0);
+        let tags = crate::exif::tags::ExifTags::default();
         // центр close
         let cc = Vec2::new(p.close.x + p.close.w * 0.5, p.close.y + p.close.h * 0.5);
-        assert_eq!(hit_popup(win, 1.0, cc), PopupRegion::Close);
+        assert_eq!(hit_popup_edit(win, 1.0, cc, &tags, "", 0.0, false), PopupRegion::Close);
         // центр поиска
         let cs = Vec2::new(p.search.x + 30.0, p.search.y + p.search.h * 0.5);
-        assert_eq!(hit_popup(win, 1.0, cs), PopupRegion::Search);
-        // центр тела
+        assert_eq!(hit_popup_edit(win, 1.0, cs, &tags, "", 0.0, false), PopupRegion::Search);
+        // центр тела (без тегов — строк нет, чистое тело)
         let cb = Vec2::new(p.body.x + 30.0, p.body.y + 30.0);
-        assert_eq!(hit_popup(win, 1.0, cb), PopupRegion::Body);
+        assert_eq!(hit_popup_edit(win, 1.0, cb, &tags, "", 0.0, false), PopupRegion::Body);
         // угол окна — вне карточки
-        assert_eq!(hit_popup(win, 1.0, Vec2::new(5.0, 5.0)), PopupRegion::Outside);
+        assert_eq!(hit_popup_edit(win, 1.0, Vec2::new(5.0, 5.0), &tags, "", 0.0, false), PopupRegion::Outside);
     }
 
     #[test]

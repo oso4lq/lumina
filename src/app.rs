@@ -40,6 +40,10 @@ pub enum UserEvent {
         generation: u64,
         result: std::result::Result<crate::exif::tags::ExifTags, String>,
     },
+    ExifSaved {
+        generation: u64,
+        result: std::result::Result<(), String>,
+    },
 }
 
 pub struct AppState {
@@ -78,6 +82,12 @@ pub struct AppState {
     pub exif_caret_on: bool,
     /// Поле поиска в фокусе (каретка мигает, клавиатура идёт в поиск).
     pub exif_focus: bool,
+    pub exif_pending: std::collections::BTreeMap<(String, String), crate::ui::scene::PendingOp>,
+    pub exif_pending_delete_gps: bool,
+    pub exif_editing: Option<(String, String)>,
+    pub exif_editor: crate::ui::textedit::TextEdit,
+    pub exif_confirm_close: bool,
+    pub exif_hovered_row: Option<usize>,
 }
 
 impl AppState {
@@ -115,6 +125,12 @@ impl AppState {
             exif_blink_since: Instant::now(),
             exif_caret_on: true,
             exif_focus: false,
+            exif_pending: std::collections::BTreeMap::new(),
+            exif_pending_delete_gps: false,
+            exif_editing: None,
+            exif_editor: crate::ui::textedit::TextEdit::new(),
+            exif_confirm_close: false,
+            exif_hovered_row: None,
         }
     }
 }
@@ -299,6 +315,12 @@ impl App {
             self.state.exif_blink_since = Instant::now();
             self.state.exif_caret_on = true;
             self.state.exif_focus = true; // при открытии поле сразу в фокусе — можно печатать
+            self.state.exif_pending.clear();
+            self.state.exif_pending_delete_gps = false;
+            self.state.exif_editing = None;
+            self.state.exif_editor.clear();
+            self.state.exif_confirm_close = false;
+            self.state.exif_hovered_row = None;
             let Some(cat) = &self.state.catalog else { return };
             let path = cat.current_path().to_path_buf();
             self.state.exif_generation += 1;
@@ -312,6 +334,45 @@ impl App {
         if let Some(w) = &self.window {
             w.request_redraw();
         }
+    }
+
+    /// Собрать pending в Vec<TagEdit> и записать через exiftool на rayon.
+    fn exif_save(&mut self) {
+        use crate::exif::tags::TagEdit;
+        let mut edits: Vec<TagEdit> = Vec::new();
+        if self.state.exif_pending_delete_gps {
+            edits.push(TagEdit::DeleteAllGps);
+        }
+        for ((group, tag), op) in &self.state.exif_pending {
+            match op {
+                crate::ui::scene::PendingOp::Set(v) => edits.push(TagEdit::Set { group: group.clone(), tag: tag.clone(), value: v.clone() }),
+                crate::ui::scene::PendingOp::Delete => edits.push(TagEdit::Delete { group: group.clone(), tag: tag.clone() }),
+            }
+        }
+        if edits.is_empty() {
+            return;
+        }
+        let Some(cat) = &self.state.catalog else { return };
+        let path = cat.current_path().to_path_buf();
+        self.state.exif_generation += 1;
+        let generation = self.state.exif_generation;
+        let proxy = self.proxy.clone();
+        rayon::spawn(move || {
+            let result = crate::exif::write::write_edits(&path, &edits).map_err(|e| e.to_string());
+            let _ = proxy.send_event(UserEvent::ExifSaved { generation, result });
+        });
+    }
+
+    /// Завершить инлайн-редактирование: записать значение редактора в pending.
+    fn exif_commit_edit(&mut self) {
+        if let Some((g, t)) = self.state.exif_editing.take() {
+            let v = self.state.exif_editor.text();
+            self.state.exif_pending.insert((g, t), crate::ui::scene::PendingOp::Set(v));
+        }
+    }
+
+    fn exif_has_pending(&self) -> bool {
+        !self.state.exif_pending.is_empty() || self.state.exif_pending_delete_gps
     }
 
     /// После ручной трансформации: запомнить по пути, пересчитать fit/clamp, перерисовать.
@@ -508,7 +569,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Пока EXIF popup открыт — гоним мигание каретки: будим цикл к следующей смене фазы
         // и перерисовываем только когда фаза перевернулась (а не каждый кадр).
-        if self.state.ui.exif_open && self.state.exif_focus {
+        if self.state.ui.exif_open && (self.state.exif_focus || self.state.exif_editing.is_some()) {
             let blink = (Instant::now() - self.state.exif_blink_since).as_secs_f32();
             let visible = ((blink / crate::ui::theme::POPUP_CARET_BLINK) as u64) % 2 == 0;
             if visible != self.state.exif_caret_on {
@@ -616,6 +677,46 @@ impl ApplicationHandler<UserEvent> for App {
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
+            }
+            UserEvent::ExifSaved { generation, result } => {
+                if generation != self.state.exif_generation || !self.state.ui.exif_open {
+                    return;
+                }
+                match result {
+                    Ok(()) => {
+                        // успех: очистить правки, перечитать теги, обновить заголовок
+                        self.state.exif_pending.clear();
+                        self.state.exif_pending_delete_gps = false;
+                        self.state.exif_editing = None;
+                        self.state.exif_error = None;
+                        if self.state.exif_confirm_close {
+                            self.state.exif_confirm_close = false;
+                            self.toggle_exif(); // закрыть после сохранения по подтверждению
+                            return;
+                        }
+                        if let Some(cat) = &self.state.catalog {
+                            let path = cat.current_path().to_path_buf();
+                            // обновить заголовок при смене Model
+                            if let Some(w) = &self.window {
+                                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                                let title = match crate::exif::read_model(&path) {
+                                    Some(m) => format!("{name} · {m} · Lumina"),
+                                    None => format!("{name} · Lumina"),
+                                };
+                                w.set_title(&title);
+                            }
+                            self.state.exif_generation += 1;
+                            let generation = self.state.exif_generation;
+                            let proxy = self.proxy.clone();
+                            rayon::spawn(move || {
+                                let result = crate::exif::read::read_tags(&path).map_err(|e| e.to_string());
+                                let _ = proxy.send_event(UserEvent::ExifLoaded { generation, result });
+                            });
+                        }
+                    }
+                    Err(e) => { self.state.exif_error = Some(e); }
+                }
+                if let Some(w) = &self.window { w.request_redraw(); }
             }
         }
     }
@@ -732,11 +833,37 @@ impl ApplicationHandler<UserEvent> for App {
                         } else {
                             (0.0, None)
                         };
-                        // фаза мигания каретки от времени с последнего ввода/открытия (только в фокусе)
+                        // если редактируем — каретка/метрики для редактора, поиск без фокуса
+                        let editing_active = self.state.exif_editing.is_some();
+                        let (ed_caret_px, ed_sel_px) = if editing_active {
+                            let chars: Vec<char> = self.state.exif_editor.text().chars().collect();
+                            let caret = self.state.exif_editor.caret().min(chars.len());
+                            let before: String = chars[..caret].iter().collect();
+                            let sel = self.state.exif_editor.selection().map(|(a, b)| (chars[..a].iter().collect::<String>(), chars[..b].iter().collect::<String>()));
+                            if let Some(r) = self.renderer.as_mut() {
+                                let cp = r.measure_text_width(&before, font_px);
+                                let sp = sel.as_ref().map(|(sa, sb)| (r.measure_text_width(sa, font_px), r.measure_text_width(sb, font_px)));
+                                (cp, sp)
+                            } else { (0.0, None) }
+                        } else { (0.0, None) };
+                        // фаза мигания каретки от времени с последнего ввода/открытия (в фокусе или при редакторе)
                         let blink = (now - self.state.exif_blink_since).as_secs_f32();
                         let phase_on = ((blink / theme::POPUP_CARET_BLINK) as u64) % 2 == 0;
-                        let caret_visible = self.state.exif_focus && phase_on;
+                        let focused = self.state.exif_focus && !editing_active;
+                        let caret_visible = (self.state.exif_focus || editing_active) && phase_on;
                         self.state.exif_caret_on = caret_visible;
+                        let editing_ref = self.state.exif_editing.as_ref().map(|(g, t)| (g.as_str(), t.as_str()));
+                        let edit_state = crate::ui::scene::PopupEditState {
+                            pending: &self.state.exif_pending,
+                            delete_gps: self.state.exif_pending_delete_gps,
+                            editing: editing_ref,
+                            editor: &self.state.exif_editor,
+                            editor_caret_px: ed_caret_px,
+                            editor_sel_px: ed_sel_px,
+                            hovered_row: self.state.exif_hovered_row,
+                            confirm_close: self.state.exif_confirm_close,
+                            has_pending: !self.state.exif_pending.is_empty() || self.state.exif_pending_delete_gps,
+                        };
                         cmds.extend(scene::build_popup(
                             r_surface_size,
                             self.state.scale,
@@ -749,7 +876,8 @@ impl ApplicationHandler<UserEvent> for App {
                             caret_px,
                             sel_px,
                             caret_visible,
-                            self.state.exif_focus,
+                            focused,
+                            &edit_state,
                         ));
                     }
                     if let Some(r) = &mut self.renderer {
@@ -792,6 +920,17 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 self.state.last_cursor = pos;
                 self.state.cursor = pos;
+                // EXIF popup открыт — считаем строку под курсором (для ✎/✕ и hover GPS).
+                if self.state.ui.exif_open {
+                    if let (Some(r), Some(tags)) = (&self.renderer, &self.state.exif_tags) {
+                        let win = r.surface_size();
+                        let body = layout::popup_layout(win, self.state.scale).body;
+                        let rows = scene::popup_rows(tags, &self.state.exif_search.text(), self.state.scale, self.state.exif_scroll, body);
+                        self.state.exif_hovered_row = rows.iter().position(|row| self.state.cursor.y >= row.y && self.state.cursor.y < row.y + row.h && body.contains(self.state.cursor));
+                        if let Some(w) = &self.window { w.request_redraw(); }
+                    }
+                    return;
+                }
                 // движение курсора → мгновенно показать fullscreen-оверлей и сбросить таймер простоя
                 if self.state.ui.fullscreen {
                     self.state.cursor_idle = 0.0;
@@ -871,24 +1010,70 @@ impl ApplicationHandler<UserEvent> for App {
                     if self.state.ui.exif_open {
                         if state == ElementState::Pressed {
                             let win = self.renderer.as_ref().map(|r| r.surface_size()).unwrap_or(glam::Vec2::ZERO);
-                            match hit::hit_popup(win, self.state.scale, self.state.cursor) {
-                                hit::PopupRegion::Close | hit::PopupRegion::Outside => self.toggle_exif(),
+                            let filter = self.state.exif_search.text();
+                            let empty = crate::exif::tags::ExifTags::default();
+                            let tags = self.state.exif_tags.as_ref().unwrap_or(&empty);
+                            let region = hit::hit_popup_edit(win, self.state.scale, self.state.cursor, tags, &filter, self.state.exif_scroll, self.state.exif_confirm_close);
+                            // строки (owned) — чтобы завершить borrow tags до мутаций self
+                            let rows = crate::ui::scene::popup_rows(tags, &filter, self.state.scale, self.state.exif_scroll, layout::popup_layout(win, self.state.scale).body);
+                            // активный редактор: клик вне него — коммит
+                            if self.state.exif_editing.is_some() && !matches!(region, hit::PopupRegion::Search) {
+                                self.exif_commit_edit();
+                            }
+                            match region {
+                                hit::PopupRegion::Close | hit::PopupRegion::Outside => {
+                                    if self.exif_has_pending() { self.state.exif_confirm_close = true; }
+                                    else { self.toggle_exif(); }
+                                }
                                 hit::PopupRegion::Search => {
-                                    // фокус поля: каретка мигает, клавиатура идёт в поиск
                                     self.state.exif_focus = true;
                                     self.state.exif_blink_since = Instant::now();
                                     self.state.exif_caret_on = true;
-                                    if let Some(w) = &self.window { w.request_redraw(); }
                                 }
-                                hit::PopupRegion::Body => {
-                                    // снять фокус: каретки нет, ввод полем не воспринимается
-                                    if self.state.exif_focus {
-                                        self.state.exif_focus = false;
-                                        if let Some(w) = &self.window { w.request_redraw(); }
+                                hit::PopupRegion::Body => { self.state.exif_focus = false; }
+                                hit::PopupRegion::RowEdit(i) | hit::PopupRegion::RowDelete(i) | hit::PopupRegion::GpsDeleteAll(i) => {
+                                    if let Some(r) = rows.get(i) {
+                                        match region {
+                                            hit::PopupRegion::RowEdit(_) => {
+                                                // начать редактирование: editor = текущее значение (или pending Set)
+                                                let key = (r.group.clone(), r.tag.clone());
+                                                let cur = match self.state.exif_pending.get(&key) {
+                                                    Some(crate::ui::scene::PendingOp::Set(v)) => v.clone(),
+                                                    _ => r.value.clone(),
+                                                };
+                                                self.state.exif_editor.set_text(&cur);
+                                                self.state.exif_editing = Some(key);
+                                                self.state.exif_focus = false; // фокус у редактора
+                                                self.state.exif_blink_since = Instant::now();
+                                                self.state.exif_caret_on = true;
+                                            }
+                                            hit::PopupRegion::RowDelete(_) => {
+                                                let key = (r.group.clone(), r.tag.clone());
+                                                // повторный ✕ снимает удаление
+                                                if matches!(self.state.exif_pending.get(&key), Some(crate::ui::scene::PendingOp::Delete)) {
+                                                    self.state.exif_pending.remove(&key);
+                                                } else {
+                                                    self.state.exif_pending.insert(key, crate::ui::scene::PendingOp::Delete);
+                                                }
+                                            }
+                                            hit::PopupRegion::GpsDeleteAll(_) => {
+                                                self.state.exif_pending_delete_gps = !self.state.exif_pending_delete_gps;
+                                            }
+                                            _ => {}
+                                        }
                                     }
                                 }
-                                _ => {} // варианты редактирования (часть 2) — заменяется в Task 8
+                                hit::PopupRegion::FooterSave => { self.exif_save(); }
+                                hit::PopupRegion::FooterCancel => {
+                                    self.state.exif_pending.clear();
+                                    self.state.exif_pending_delete_gps = false;
+                                    self.state.exif_editing = None;
+                                }
+                                hit::PopupRegion::ConfirmSave => { self.exif_save(); }
+                                hit::PopupRegion::ConfirmDiscard => { self.state.exif_confirm_close = false; self.toggle_exif(); }
+                                hit::PopupRegion::ConfirmKeep => { self.state.exif_confirm_close = false; }
                             }
+                            if let Some(w) = &self.window { w.request_redraw(); }
                         }
                         return;
                     }
@@ -1014,9 +1199,43 @@ impl ApplicationHandler<UserEvent> for App {
                     // Пока EXIF popup открыт — клавиатура поглощается модалом; ввод идёт в поиск
                     // только когда поле в фокусе. Шорткаты приложения не срабатывают.
                     if self.state.ui.exif_open {
-                        // Esc закрывает popup независимо от фокуса поля.
+                        // Esc: при активном редакторе — отмена правки; иначе закрытие popup.
                         if let Key::Named(NamedKey::Escape) = event.logical_key.as_ref() {
+                            if self.state.exif_editing.is_some() {
+                                self.state.exif_editing = None;
+                                self.state.exif_editor.clear();
+                                if let Some(w) = &self.window { w.request_redraw(); }
+                                return;
+                            }
                             self.toggle_exif();
+                            return;
+                        }
+                        // Активный инлайн-редактор: Enter коммитит, иначе правим editor.
+                        if self.state.exif_editing.is_some() {
+                            let shift = self.state.shift_down;
+                            match event.logical_key.as_ref() {
+                                Key::Named(NamedKey::Enter) => { self.exif_commit_edit(); }
+                                Key::Named(NamedKey::Backspace) => self.state.exif_editor.backspace(),
+                                Key::Named(NamedKey::Delete) => self.state.exif_editor.delete(),
+                                Key::Named(NamedKey::ArrowLeft) => self.state.exif_editor.move_left(shift),
+                                Key::Named(NamedKey::ArrowRight) => self.state.exif_editor.move_right(shift),
+                                Key::Named(NamedKey::Home) => self.state.exif_editor.move_home(shift),
+                                Key::Named(NamedKey::End) => self.state.exif_editor.move_end(shift),
+                                _ => {
+                                    if self.state.ctrl_down {
+                                        if let PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) = event.physical_key {
+                                            self.state.exif_editor.select_all();
+                                        }
+                                        // Ctrl+C/V/X — в Task 9
+                                    } else if let Some(txt) = &event.text {
+                                        let s: String = txt.chars().filter(|c| !c.is_control()).collect();
+                                        if !s.is_empty() { self.state.exif_editor.insert_str(&s); }
+                                    }
+                                }
+                            }
+                            self.state.exif_blink_since = Instant::now();
+                            self.state.exif_caret_on = true;
+                            if let Some(w) = &self.window { w.request_redraw(); }
                             return;
                         }
                         // Поле без фокуса — клавиатура поглощается, но в поиск не вводится.
