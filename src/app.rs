@@ -55,6 +55,7 @@ pub struct AppState {
     pub raw_flags: Vec<bool>,      // для бейджей: RAW-файл по индексу каталога
     pub badge_labels: Vec<String>, // текст бейджа (расширение в верхнем регистре)
     pub thumb_aspects: Vec<f32>,   // аспект (w/h) миниатюры по индексу; дефолт до загрузки
+    pub thumbs_in_flight: usize,   // число одновременных декодов миниатюр (троттлинг)
 }
 
 impl AppState {
@@ -77,6 +78,7 @@ impl AppState {
             raw_flags: Vec::new(),
             badge_labels: Vec::new(),
             thumb_aspects: Vec::new(),
+            thumbs_in_flight: 0,
         }
     }
 }
@@ -112,7 +114,9 @@ impl App {
         let proxy = self.proxy.clone();
         if let Some(w) = &self.window {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            self.state.ui.title = format!("{name} · Lumina");
+            let title = format!("{name} · Lumina");
+            self.state.ui.title = title.clone();
+            w.set_title(&title); // системный заголовок (таскбар/alt-tab)
             w.request_redraw();
         }
         // Списки каталога для карусели и активный индекс
@@ -235,8 +239,13 @@ impl App {
 
     fn toggle_fullscreen(&mut self) {
         self.state.ui.fullscreen = !self.state.ui.fullscreen;
+        let on = self.state.ui.fullscreen;
+        // Сообщаем wndproc состояние ДО set_fullscreen, чтобы WM_NCCALCSIZE во время
+        // перехода сразу отдавал согласованный размер клиента (иначе рассинхрон → resize-петля).
+        #[cfg(windows)]
+        crate::platform::windows::set_fullscreen(on);
         if let Some(w) = &self.window {
-            let fs = if self.state.ui.fullscreen {
+            let fs = if on {
                 Some(winit::window::Fullscreen::Borderless(None))
             } else {
                 None
@@ -244,8 +253,6 @@ impl App {
             w.set_fullscreen(fs);
             w.request_redraw();
         }
-        #[cfg(windows)]
-        crate::platform::windows::set_fullscreen(self.state.ui.fullscreen);
     }
 
     /// Перейти к файлу по индексу каталога.
@@ -261,18 +268,30 @@ impl App {
     }
 
     /// Запросить декод миниатюр для индексов окна, которых ещё нет.
+    /// Троттлинг: не более `MAX_INFLIGHT` одновременных декодов — полноразмерный
+    /// декод (напр. 40MP ≈ 160 МБ) тяжёл, шторм из десятка сразу подвешивал UI.
+    /// Остальные подхватятся на следующих кадрах (каждое завершение → redraw).
     fn request_thumbnails(&mut self, window: Vec<usize>) {
-        let Some(catalog) = &self.state.catalog else { return };
-        let pending = self.state.thumbs.take_pending(&window);
-        if pending.is_empty() {
+        const MAX_INFLIGHT: usize = 4;
+        if self.state.catalog.is_none() {
             return;
         }
         let generation = self.state.thumbs.generation;
         let scale = self.state.scale;
         let th = (crate::ui::theme::THUMB_H * scale).round() as u32;
-        for index in pending {
-            let Some(path) = catalog.files().get(index) else { continue };
-            let path = path.to_path_buf();
+        for index in window {
+            if self.state.thumbs_in_flight >= MAX_INFLIGHT {
+                break;
+            }
+            if self.state.thumbs.state(index).is_some() {
+                continue; // уже запрошена/готова/неудачна
+            }
+            let path = match self.state.catalog.as_ref().and_then(|c| c.files().get(index)) {
+                Some(p) => p.to_path_buf(),
+                None => continue,
+            };
+            let _ = self.state.thumbs.take_pending(&[index]); // пометить Loading
+            self.state.thumbs_in_flight += 1;
             let proxy = self.proxy.clone();
             let ext = crate::decoder::ext_lower(&path);
             rayon::spawn(move || {
@@ -406,6 +425,8 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::Thumbnail { generation, index, rgba, w, h } => {
+                // каждый спавн декода шлёт ровно одно событие → освобождаем слот троттлинга
+                self.state.thumbs_in_flight = self.state.thumbs_in_flight.saturating_sub(1);
                 if generation != self.state.thumbs.generation {
                     return; // устаревшее поколение (сменилась папка)
                 }

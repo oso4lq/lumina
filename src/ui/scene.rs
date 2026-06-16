@@ -32,9 +32,17 @@ pub enum Align {
     Center,
 }
 
+/// Слой прямоугольника относительно миниатюр карусели.
+/// `Bg` рисуется ДО миниатюр (подложки), `Overlay` — ПОСЛЕ (рамка/бейджи поверх фото).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RectLayer {
+    Bg,
+    Overlay,
+}
+
 #[derive(Clone, Debug)]
 pub enum DrawCmd {
-    Rect { rect: Rect, color: [f32; 4], radius: f32 },
+    Rect { rect: Rect, color: [f32; 4], radius: f32, layer: RectLayer },
     Text { rect: Rect, text: String, size: f32, color: [f32; 4], align: Align },
     Icon { rect: Rect, glyph: char, size: f32, color: [f32; 4], font: IconFont },
 }
@@ -126,15 +134,15 @@ pub fn build(
     }
 
     // --- Titlebar (как в v0.3a) ---
-    cmds.push(DrawCmd::Rect { rect: layout.titlebar, color: theme.bg_surface, radius: 0.0 });
+    cmds.push(DrawCmd::Rect { rect: layout.titlebar, color: theme.bg_surface, radius: 0.0, layer: RectLayer::Bg });
     if state.hovered == Region::Minimize {
-        cmds.push(DrawCmd::Rect { rect: layout.btn_min, color: theme.button_hover, radius: 0.0 });
+        cmds.push(DrawCmd::Rect { rect: layout.btn_min, color: theme.button_hover, radius: 0.0, layer: RectLayer::Bg });
     }
     if state.hovered == Region::Maximize {
-        cmds.push(DrawCmd::Rect { rect: layout.btn_max, color: theme.button_hover, radius: 0.0 });
+        cmds.push(DrawCmd::Rect { rect: layout.btn_max, color: theme.button_hover, radius: 0.0, layer: RectLayer::Bg });
     }
     if state.hovered == Region::Close {
-        cmds.push(DrawCmd::Rect { rect: layout.btn_close, color: theme.button_close_hover, radius: 0.0 });
+        cmds.push(DrawCmd::Rect { rect: layout.btn_close, color: theme.button_close_hover, radius: 0.0, layer: RectLayer::Bg });
     }
     cmds.push(DrawCmd::Text {
         rect: layout.title,
@@ -155,7 +163,7 @@ pub fn build(
     cmds.push(DrawCmd::Icon { rect: layout.btn_close, glyph: GLYPH_CLOSE, size: icon, color: theme.text_primary, font: IconFont::WindowMdl2 });
 
     // --- Divider ---
-    cmds.push(DrawCmd::Rect { rect: layout.divider, color: theme.bg_surface, radius: 0.0 });
+    cmds.push(DrawCmd::Rect { rect: layout.divider, color: theme.bg_surface, radius: 0.0, layer: RectLayer::Bg });
     // грип по центру (маленький прямоугольник)
     let grip_w = 60.0 * scale;
     let grip_h = 3.0 * scale;
@@ -165,11 +173,11 @@ pub fn build(
         w: grip_w,
         h: grip_h,
     };
-    cmds.push(DrawCmd::Rect { rect: grip, color: theme.divider_grip, radius: grip_h * 0.5 });
+    cmds.push(DrawCmd::Rect { rect: grip, color: theme.divider_grip, radius: grip_h * 0.5, layer: RectLayer::Bg });
 
     // --- Bottom bar (если хоть немного видим) ---
     if state.bottom_factor > 0.0 {
-        cmds.push(DrawCmd::Rect { rect: layout.bottom_bar, color: theme.bg_surface, radius: 0.0 });
+        cmds.push(DrawCmd::Rect { rect: layout.bottom_bar, color: theme.bg_surface, radius: 0.0, layer: RectLayer::Bg });
 
         // Мета-панель: формат / разрешение / размер — в столбик, без заголовков.
         if let Some(meta) = &state.meta {
@@ -193,27 +201,27 @@ pub fn build(
                 let t = theme::THUMB_BORDER * scale;
                 let c = theme.active_border;
                 // четыре тонких прямоугольника по краям миниатюры
-                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x, y: r.y, w: r.w, h: t }, color: c, radius: 0.0 });
-                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x, y: r.y + r.h - t, w: r.w, h: t }, color: c, radius: 0.0 });
-                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x, y: r.y, w: t, h: r.h }, color: c, radius: 0.0 });
-                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x + r.w - t, y: r.y, w: t, h: r.h }, color: c, radius: 0.0 });
+                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x, y: r.y, w: r.w, h: t }, color: c, radius: 0.0, layer: RectLayer::Overlay });
+                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x, y: r.y + r.h - t, w: r.w, h: t }, color: c, radius: 0.0, layer: RectLayer::Overlay });
+                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x, y: r.y, w: t, h: r.h }, color: c, radius: 0.0, layer: RectLayer::Overlay });
+                cmds.push(DrawCmd::Rect { rect: Rect { x: r.x + r.w - t, y: r.y, w: t, h: r.h }, color: c, radius: 0.0, layer: RectLayer::Overlay });
             }
             if raw_flags.get(*idx).copied().unwrap_or(false) {
                 // бейдж формата в правом нижнем углу — фон + текст
                 let bw = 22.0 * scale;
                 let bh = 11.0 * scale;
                 let badge = Rect { x: r.x + r.w - bw - 3.0 * scale, y: r.y + r.h - bh - 3.0 * scale, w: bw, h: bh };
-                cmds.push(DrawCmd::Rect { rect: badge, color: theme.badge_bg, radius: 2.0 * scale });
+                cmds.push(DrawCmd::Rect { rect: badge, color: theme.badge_bg, radius: 2.0 * scale, layer: RectLayer::Overlay });
             }
         }
         // (текст бейджа — в Task 9, когда есть расширения файлов; здесь только фон-плашка)
 
         // Кнопки действий
         if state.hovered == Region::ActionFullscreen {
-            cmds.push(DrawCmd::Rect { rect: layout.btn_fullscreen, color: theme.button_hover, radius: 0.0 });
+            cmds.push(DrawCmd::Rect { rect: layout.btn_fullscreen, color: theme.button_hover, radius: 0.0, layer: RectLayer::Bg });
         }
         if state.hovered == Region::ActionExif {
-            cmds.push(DrawCmd::Rect { rect: layout.btn_exif, color: theme.button_hover, radius: 0.0 });
+            cmds.push(DrawCmd::Rect { rect: layout.btn_exif, color: theme.button_hover, radius: 0.0, layer: RectLayer::Bg });
         }
         let ai = theme::ACTION_ICON_SIZE * scale;
         cmds.push(DrawCmd::Icon { rect: layout.btn_fullscreen, glyph: GLYPH_FULLSCREEN, size: ai, color: theme.text_primary, font: IconFont::Tabler });

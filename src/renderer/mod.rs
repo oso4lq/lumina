@@ -20,7 +20,8 @@ use winit::window::Window;
 pub struct Renderer {
     ctx: GpuContext,
     blit: BlitPipeline,
-    ui: UiPipeline,
+    ui: UiPipeline,         // фон-подложки (рисуются ДО миниатюр)
+    ui_overlay: UiPipeline, // рамка/бейджи (рисуются ПОСЛЕ миниатюр)
     text: TextLayer,
     thumbs: ThumbnailLayer,
     image_size: Option<Vec2>,
@@ -37,10 +38,11 @@ impl Renderer {
         let ctx = GpuContext::new(window)?;
         let blit = BlitPipeline::new(&ctx.device, ctx.config.format);
         let ui = UiPipeline::new(&ctx.device, ctx.config.format);
+        let ui_overlay = UiPipeline::new(&ctx.device, ctx.config.format);
         let text = TextLayer::new(&ctx.device, &ctx.queue, ctx.config.format);
         let thumbs = ThumbnailLayer::new(&ctx.device, ctx.config.format);
         Ok(Self {
-            ctx, blit, ui, text, thumbs,
+            ctx, blit, ui, ui_overlay, text, thumbs,
             image_size: None,
             titlebar_h: 0.0,
             bottom_chrome_h: 0.0,
@@ -109,15 +111,25 @@ impl Renderer {
 
         let screen = [self.ctx.config.width as f32, self.ctx.config.height as f32];
 
-        // Прямоугольники из draw-команд
-        let rects: Vec<(Rect, [f32; 4], f32)> = cmds
+        // Прямоугольники из draw-команд, разделённые по слою:
+        // Bg — подложки (до миниатюр), Overlay — рамка/бейджи (после миниатюр).
+        use crate::ui::scene::RectLayer;
+        let bg_rects: Vec<(Rect, [f32; 4], f32)> = cmds
             .iter()
             .filter_map(|c| match c {
-                DrawCmd::Rect { rect, color, radius } => Some((*rect, *color, *radius)),
+                DrawCmd::Rect { rect, color, radius, layer: RectLayer::Bg } => Some((*rect, *color, *radius)),
                 _ => None,
             })
             .collect();
-        self.ui.prepare(&self.ctx.device, &self.ctx.queue, screen, &rects);
+        let overlay_rects: Vec<(Rect, [f32; 4], f32)> = cmds
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Rect { rect, color, radius, layer: RectLayer::Overlay } => Some((*rect, *color, *radius)),
+                _ => None,
+            })
+            .collect();
+        self.ui.prepare(&self.ctx.device, &self.ctx.queue, screen, &bg_rects);
+        self.ui_overlay.prepare(&self.ctx.device, &self.ctx.queue, screen, &overlay_rects);
 
         // Текст и глифы
         self.text
@@ -158,7 +170,9 @@ impl Renderer {
                 self.blit.draw(&self.ctx.queue, &mut pass, view, self.image_size, viewer);
                 pass.set_viewport(0.0, 0.0, screen[0], screen[1], 0.0, 1.0);
             }
-            // 2) миниатюры — клипуются зоной карусели (scissor), иначе при сворачивании
+            // 2) фон-подложки (titlebar/divider/bottom bar/hover) — ДО миниатюр
+            self.ui.draw(&mut pass);
+            // 3) миниатюры — клипуются зоной карусели (scissor), иначе при сворачивании
             //    bottom bar они вылезали бы в viewer/углы.
             let cx = self.thumb_clip.x.max(0.0).min(screen[0]);
             let cy = self.thumb_clip.y.max(0.0).min(screen[1]);
@@ -167,12 +181,12 @@ impl Renderer {
             if cw >= 1.0 && ch >= 1.0 {
                 pass.set_scissor_rect(cx as u32, cy as u32, cw as u32, ch as u32);
                 self.thumbs.draw(&self.ctx.device, &self.ctx.queue, &mut pass, thumb_scale, thumb_rects);
-                // вернуть scissor на весь экран для UI/текста
+                // вернуть scissor на весь экран
                 pass.set_scissor_rect(0, 0, self.ctx.config.width, self.ctx.config.height);
             }
-            // 3) UI-прямоугольники
-            self.ui.draw(&mut pass);
-            // 4) текст
+            // 4) overlay-прямоугольники (рамка активной, бейджи) — ПОВЕРХ миниатюр
+            self.ui_overlay.draw(&mut pass);
+            // 5) текст и глифы
             self.text.draw(&mut pass).map_err(LuminaError::Gpu)?;
         }
         self.ctx.queue.submit(Some(encoder.finish()));
