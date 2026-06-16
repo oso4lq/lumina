@@ -20,6 +20,9 @@ impl Default for Transform {
 }
 
 impl Transform {
+    /// Тождественна ли трансформация (нет поворота/отражений). Часть публичного API
+    /// `Transform`; пока используется в тестах — потребитель появится в v0.4b (EXIF popup).
+    #[allow(dead_code)]
     pub fn is_identity(&self) -> bool {
         self.rotation == 0 && !self.flip_h && !self.flip_v
     }
@@ -246,6 +249,8 @@ impl ViewTransform {
 
     /// Четыре угла изображения в экранных пикселях — для геометрии, хит-тестов и отладки.
     /// Порядок соответствует UV-углам unit-quad ДО поворота: (0,0), (1,0), (0,1), (1,1).
+    /// Пока используется в тестах геометрии; реальный потребитель — хит-тест повёрнутого фото (v0.4b).
+    #[allow(dead_code)]
     pub fn screen_quad(&self, win: Vec2, img: Vec2) -> [Vec2; 4] {
         let m = self.model_matrix(win, img);
         let corners = [
