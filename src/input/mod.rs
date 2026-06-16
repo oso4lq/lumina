@@ -54,6 +54,7 @@ pub enum Action {
     ToggleFullscreen,
     FitView,
     ActualSize,
+    ToggleExif,
 }
 
 /// Маппинг физической клавиши + модификаторов в действие.
@@ -68,6 +69,7 @@ pub fn map_key(code: KeyCode, ctrl: bool, shift: bool) -> Option<Action> {
         (KeyCode::KeyZ, true) => Some(Action::ResetTransform),
         (KeyCode::Digit0, true) => Some(Action::FitView),
         (KeyCode::Digit1, true) => Some(Action::ActualSize),
+        (KeyCode::KeyI, false) => Some(Action::ToggleExif),
         _ => None,
     }
 }
@@ -153,6 +155,13 @@ mod tests {
         assert_eq!(map_key(KeyCode::KeyZ, false, false), None); // Z без Ctrl — ничего
         assert_eq!(map_key(KeyCode::Digit0, true, false), Some(Action::FitView));
         assert_eq!(map_key(KeyCode::Digit1, true, false), Some(Action::ActualSize));
+    }
+
+    #[test]
+    fn map_key_toggle_exif() {
+        use winit::keyboard::KeyCode;
+        assert_eq!(map_key(KeyCode::KeyI, false, false), Some(Action::ToggleExif));
+        assert_eq!(map_key(KeyCode::KeyI, true, false), None); // Ctrl+I — не popup
     }
 
     #[test]

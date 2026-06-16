@@ -55,6 +55,21 @@ pub fn read_orientation(path: &Path) -> Orientation {
     }
 }
 
+/// Прочитать модель камеры (EXIF Model) для заголовка. Любая ошибка/отсутствие → None.
+/// Дёшево: парсит только метаданные. Пустую строку трактуем как None.
+pub fn read_model(path: &Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let exif = ::exif::Reader::new().read_from_container(&mut reader).ok()?;
+    let f = exif.get_field(::exif::Tag::Model, ::exif::In::PRIMARY)?;
+    let s = f.display_value().to_string().trim().trim_matches('"').to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 /// Применить ориентацию к изображению, приведя его к upright-виду.
 /// Используется декодерами разово на потоке декода.
 pub fn apply_to_image(img: DynamicImage, orientation: Orientation) -> DynamicImage {

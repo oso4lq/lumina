@@ -257,6 +257,8 @@ impl App {
             Action::ToggleFullscreen => self.toggle_fullscreen(),
             Action::FitView => self.set_fit_view(),
             Action::ActualSize => self.set_actual_size(),
+            // TODO(v0.4b): переключение EXIF popup появится в последующей задаче.
+            Action::ToggleExif => {}
         }
     }
 
