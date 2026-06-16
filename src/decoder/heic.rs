@@ -75,4 +75,17 @@ mod tests {
         assert!(img.width > 0 && img.height > 0);
         assert_eq!(img.rgba.len(), (img.width * img.height * 4) as usize);
     }
+
+    // Приёмка: портретный HEIC (снят вертикально) должен выйти портретным —
+    // libheif применяет irot/imir сам, повторно НЕ ориентируем.
+    // cargo test heic_portrait_is_upright -- --ignored
+    #[test]
+    #[ignore]
+    fn heic_portrait_is_upright() {
+        let d = HeicDecoder;
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/portrait.heic");
+        let img = d.decode_full(&path).unwrap();
+        assert!(img.height > img.width, "ожидался портрет: {}×{}", img.width, img.height);
+    }
 }
