@@ -31,7 +31,7 @@ fn make_oriented_jpeg() {
         0x4D, 0x4D, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x08, // TIFF header (MM, 42, offset=8)
         0x00, 0x01,                                      // IFD0: 1 entry
         0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, // tag=Orientation, type=SHORT, count=1
-        0x00, 0x06, 0x00, 0x00,                          // value=6 (в старших 2 байтах SHORT)
+        0x00, 0x06, 0x00, 0x00,                          // value=6: big-endian SHORT в байтах [0..2], [2..4] — паддинг
         0x00, 0x00, 0x00, 0x00,                          // next IFD offset = 0
     ];
     // 3) Собрать APP1-сегмент: маркер FFE1 + длина (вкл. 2 байта длины) + payload.

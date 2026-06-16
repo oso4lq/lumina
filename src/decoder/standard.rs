@@ -12,6 +12,8 @@ impl Decoder for StandardDecoder {
     }
 
     fn decode_preview(&self, _path: &Path) -> Result<Option<DecodedImage>> {
+        // Нет быстрого превью; при добавлении (напр. EXIF-thumbnail) применять
+        // exif::read_orientation/apply_to_image так же, как в decode_full.
         Ok(None)
     }
 
