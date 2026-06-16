@@ -17,8 +17,8 @@
 | **v0.3b — Bottom bar** | 🟢 | Divider toggle, мета-панель, карусель миниатюр (lazy in-memory, aspect-лента), кнопки поворот/fullscreen/EXIF, fullscreen-оверлей play/выход (авто-скрытие), иконки Tabler | [дизайн](docs/superpowers/specs/2026-06-15-lumina-v0.3b-bottom-bar-design.md) · [план](docs/superpowers/plans/2026-06-15-lumina-v0.3b-bottom-bar.md) |
 | **v0.4a — Трансформации** | 🟢 | Авто-ориентация по EXIF Orientation при декоде (JPEG/TIFF/WebP + Bayer-RAW; HEIC ориентирует libheif), ручной поворот/отражение `R`/`Shift+R`/`H`/`V`/`Ctrl+Z` + кнопка, сессионная память трансформаций | [дизайн](docs/superpowers/specs/2026-06-16-lumina-v0.4a-transforms-design.md) · [план](docs/superpowers/plans/2026-06-16-lumina-v0.4a-transforms.md) |
 | **v0.4c — Навигация и эргономика ввода** | 🟢 | Раскладко-независимые шорткаты (по физ. клавише), экранные стрелки ‹ › на hover (оконный режим), свайп drag-жестом при fit | [дизайн](docs/superpowers/specs/2026-06-16-lumina-v0.4c-navigation-input-design.md) · [план](docs/superpowers/plans/2026-06-16-lumina-v0.4c-navigation-input.md) |
-| **v0.4b — EXIF popup/запись** | 🟡 | Часть 1 (чтение) готова: EXIF popup-просмотрщик (полный браузер тегов exiftool, группировка/поиск/скролл), модель камеры в заголовке. Часть 2 (в плане): редактирование/запись тегов, XMP sidecar, запись EXIF Orientation в оригиналы, бандл exiftool | [дизайн](docs/superpowers/specs/2026-06-16-lumina-v0.4b-exif-design.md) · [план ч.1](docs/superpowers/plans/2026-06-16-lumina-v0.4b-exif-read.md) |
-| **v0.5 — Полировка** | ⚪ | Кэш миниатюр (sled), префетч ±2, folder watcher (notify), свайп трекпадом, installer + реестр | — |
+| **v0.4b — EXIF popup/запись** | 🟡 | Часть 1 (чтение) готова: EXIF popup-просмотрщик (полный браузер тегов exiftool, группировка/поиск/скролл), модель камеры в заголовке. Часть 2 (в плане): редактирование/запись тегов (записываемые группы EXIF/XMP/IPTC/GPS), XMP sidecar для RAW, «Удалить всё GPS», запись EXIF Orientation в оригиналы. Бандл exiftool → перенесён в v0.5 (вместе с инсталлятором) | [дизайн](docs/superpowers/specs/2026-06-16-lumina-v0.4b-exif-design.md) · [план ч.1](docs/superpowers/plans/2026-06-16-lumina-v0.4b-exif-read.md) |
+| **v0.5 — Полировка** | ⚪ | Кэш миниатюр (sled), префетч ±2, folder watcher (notify), свайп трекпадом, installer + реестр, **бандл exiftool** (standalone exe + `exiftool_files` рядом с exe — приложение работает без отдельной установки exiftool) | — |
 | **v0.6 — Slideshow и пр.** | ⚪ | Slideshow (кнопка play-задел уже в fullscreen-оверлее), темизация (System/Dark/Light), multi-monitor fullscreen, режимы сортировки каталога | — |
 
 ## Прогресс v0.1 (детально)
@@ -189,9 +189,11 @@ popup layout/hit/scene 7+, input 1; +1 `#[ignore]` интеграционный 
 Визуальная GUI-приёмка пройдена (popup поверх фото, группировка/поиск/скролл, Model в заголовке, фокус/каретка,
 гейтинг, баннер ошибки). exiftool у разработчика — Perl-дистрибутив через тонкий `exiftool.exe`-shim рядом с exe.
 
-**Часть 2 — запись (в плане):** инлайн-редактирование значений тегов, запись через exiftool, «Удалить всё GPS»,
-XMP sidecar, бандл `exiftool.exe` в ассеты, подтверждение несохранённых изменений, запись EXIF Orientation
-в оригиналы (пункт #2 из v0.4c). Clipboard (Ctrl+C/V) в поиске/редакторе — тоже часть 2.
+**Часть 2 — запись (в плане):** инлайн-редактирование значений тегов **только записываемых групп**
+(EXIF/XMP/IPTC/GPS; File/Composite/ExifTool/ICC — read-only), запись через exiftool (in-place + `_original`),
+RAW → XMP sidecar, «Удалить всё GPS», подтверждение несохранённых изменений, запись EXIF Orientation
+в оригиналы (пункт #2 из v0.4c). Clipboard (Ctrl+C/V) в поле — тоже часть 2.
+**Бандл exiftool перенесён в v0.5** (вместе с инсталлятором): пока путь резолвится рядом с exe / в PATH (dev — shim).
 
 > **Зависимость:** добавлен `serde_json` (разбор JSON exiftool). Внешний `exiftool.exe` — пока dev-требование
 > (рядом с exe или в PATH); бандл в ассеты — часть 2. Новых нативных зависимостей сборки часть 1 не вводит.
