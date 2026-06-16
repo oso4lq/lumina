@@ -329,6 +329,82 @@ fn row_matches(filter: &str, group: &str, tag: &str, value: &str) -> bool {
     format!("{group}:{tag}").to_lowercase().contains(&f) || value.to_lowercase().contains(&f)
 }
 
+/// Вид строки списка тегов popup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupRowKind {
+    Group,
+    Tag,
+}
+
+/// Геометрия одной видимой строки списка (виртуальная позиция со скроллом, физ. px).
+#[derive(Clone, Debug)]
+pub struct PopupRow {
+    pub kind: PopupRowKind,
+    pub group: String,
+    pub tag: String,   // пусто для Group
+    pub value: String, // пусто для Group
+    pub editable: bool,
+    pub y: f32,
+    pub h: f32,
+}
+
+/// Все видимые строки (заголовки групп + теги) с учётом фильтра и скролла.
+/// Порядок и фильтрация — те же, что в отрисовке. Используется scene/hit/app.
+pub fn popup_rows(
+    tags: &crate::exif::tags::ExifTags,
+    filter: &str,
+    scale: f32,
+    scroll: f32,
+    body: Rect,
+) -> Vec<PopupRow> {
+    use crate::exif::tags::is_editable;
+    use crate::ui::layout::{popup_group_h, popup_row_h};
+    let row_h = popup_row_h(scale);
+    let grp_h = popup_group_h(scale);
+    let mut out = Vec::new();
+    let mut y = body.y - scroll + popup_body_top_pad(scale);
+    for g in &tags.groups {
+        let visible: Vec<&(String, String)> =
+            g.tags.iter().filter(|(t, v)| row_matches(filter, &g.name, t, v)).collect();
+        if visible.is_empty() {
+            continue;
+        }
+        out.push(PopupRow {
+            kind: PopupRowKind::Group,
+            group: g.name.clone(),
+            tag: String::new(),
+            value: String::new(),
+            editable: false,
+            y,
+            h: grp_h,
+        });
+        y += grp_h;
+        let editable = is_editable(&g.name);
+        for (tag, value) in visible {
+            out.push(PopupRow {
+                kind: PopupRowKind::Tag,
+                group: g.name.clone(),
+                tag: tag.clone(),
+                value: value.clone(),
+                editable,
+                y,
+                h: row_h,
+            });
+            y += row_h;
+        }
+    }
+    out
+}
+
+/// Прямоугольники иконок-действий (edit, delete) у правого края строки тега.
+pub fn popup_row_actions(row: &PopupRow, body: Rect, scale: f32) -> (Rect, Rect) {
+    let pad = theme::POPUP_PAD * scale;
+    let s = theme::POPUP_ACTION_ICON * scale + 8.0 * scale; // зона иконки
+    let del = Rect { x: body.x + body.w - pad - s, y: row.y, w: s, h: row.h };
+    let edit = Rect { x: del.x - s, y: row.y, w: s, h: row.h };
+    (edit, del)
+}
+
 /// Построить DrawCmd'ы EXIF popup (рисуются поверх всего в конце кадра).
 /// `tags=None` + `error=Some` → баннер ошибки; `tags=None` без ошибки → «загрузка…».
 #[allow(clippy::too_many_arguments)]
@@ -638,6 +714,24 @@ mod tests {
         crate::exif::tags::parse(
             r#"[{"SourceFile":"a","EXIF:Make":"Fujifilm","EXIF:Model":"X-T5","GPS:GPSLatitude":"41 N"}]"#,
         )
+    }
+
+    #[test]
+    fn popup_rows_groups_then_tags_editable_flag() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let tags = sample_tags(); // EXIF:Make, EXIF:Model, GPS:GPSLatitude
+        let search = crate::ui::textedit::TextEdit::new();
+        let p = crate::ui::layout::popup_layout(win, 1.0);
+        let rows = popup_rows(&tags, &search.text(), 1.0, 0.0, p.body);
+        // первая строка — заголовок группы EXIF
+        assert!(matches!(rows[0].kind, PopupRowKind::Group));
+        assert_eq!(rows[0].group, "EXIF");
+        // теговые строки EXIF editable, их значение присутствует
+        let make = rows.iter().find(|r| r.tag == "Make").unwrap();
+        assert!(matches!(make.kind, PopupRowKind::Tag));
+        assert!(make.editable); // EXIF — записываемая группа
+        // координаты возрастают сверху вниз
+        assert!(rows[1].y >= rows[0].y);
     }
 
     #[test]
