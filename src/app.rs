@@ -116,6 +116,9 @@ impl App {
             return;
         }
         let path = catalog.current_path().to_path_buf();
+        // Восстанавливаем сохранённый ручной трансформ ДО инкремента generation: при первом
+        // кадре новой генерации вид re-init'ится (set_fit + rotation-aware fit_zoom уже с учётом
+        // этого поворота), поэтому масштаб/центрирование пересчитаются корректно.
         let saved = self.state.transforms.get(&path).copied().unwrap_or_default();
         self.state.view.set_transform(saved);
         self.state.generation += 1;
