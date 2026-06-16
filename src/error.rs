@@ -20,6 +20,9 @@ pub enum LuminaError {
     #[error("ошибка RAW {0}: {1}")]
     Raw(std::path::PathBuf, String),
 
+    #[error("ошибка EXIF {0}: {1}")]
+    Exif(std::path::PathBuf, String),
+
     #[error("ошибка платформы: {0}")]
     Platform(String),
 }

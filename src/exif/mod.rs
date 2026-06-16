@@ -1,4 +1,4 @@
-// pub mod read; // создаётся в Task 3
+pub mod read;
 pub mod tags;
 
 use image::DynamicImage;
