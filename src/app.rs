@@ -375,6 +375,19 @@ impl App {
         !self.state.exif_pending.is_empty() || self.state.exif_pending_delete_gps
     }
 
+    /// Прочитать текст из буфера обмена (None при ошибке/пустом).
+    fn clipboard_get() -> Option<String> {
+        arboard::Clipboard::new().ok()?.get_text().ok().filter(|s| !s.is_empty())
+    }
+    /// Положить текст в буфер обмена (ошибки игнорируем).
+    fn clipboard_set(text: &str) {
+        if !text.is_empty() {
+            if let Ok(mut c) = arboard::Clipboard::new() {
+                let _ = c.set_text(text.to_string());
+            }
+        }
+    }
+
     /// После ручной трансформации: запомнить по пути, пересчитать fit/clamp, перерисовать.
     fn after_transform_change(&mut self) {
         if let Some(cat) = &self.state.catalog {
@@ -1223,10 +1236,13 @@ impl ApplicationHandler<UserEvent> for App {
                                 Key::Named(NamedKey::End) => self.state.exif_editor.move_end(shift),
                                 _ => {
                                     if self.state.ctrl_down {
-                                        if let PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) = event.physical_key {
-                                            self.state.exif_editor.select_all();
+                                        match event.physical_key {
+                                            PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) => self.state.exif_editor.select_all(),
+                                            PhysicalKey::Code(winit::keyboard::KeyCode::KeyC) => { if let Some(s) = self.state.exif_editor.selected_text() { Self::clipboard_set(&s); } }
+                                            PhysicalKey::Code(winit::keyboard::KeyCode::KeyX) => { if let Some(s) = self.state.exif_editor.cut() { Self::clipboard_set(&s); } }
+                                            PhysicalKey::Code(winit::keyboard::KeyCode::KeyV) => { if let Some(s) = Self::clipboard_get() { self.state.exif_editor.insert_str(&s); } }
+                                            _ => {}
                                         }
-                                        // Ctrl+C/V/X — в Task 9
                                     } else if let Some(txt) = &event.text {
                                         let s: String = txt.chars().filter(|c| !c.is_control()).collect();
                                         if !s.is_empty() { self.state.exif_editor.insert_str(&s); }
@@ -1252,12 +1268,14 @@ impl ApplicationHandler<UserEvent> for App {
                             Key::Named(NamedKey::Home) => self.state.exif_search.move_home(shift),
                             Key::Named(NamedKey::End) => self.state.exif_search.move_end(shift),
                             _ => {
-                                // Ctrl+A — выделить всё; печатаемый текст — вставить.
+                                // Ctrl+A — выделить всё; C/V/X — буфер обмена; печатаемый текст — вставить.
                                 if self.state.ctrl_down {
-                                    if let PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) = event.physical_key {
-                                        self.state.exif_search.select_all();
-                                    } else {
-                                        handled = false;
+                                    match event.physical_key {
+                                        PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) => self.state.exif_search.select_all(),
+                                        PhysicalKey::Code(winit::keyboard::KeyCode::KeyC) => { if let Some(s) = self.state.exif_search.selected_text() { Self::clipboard_set(&s); } }
+                                        PhysicalKey::Code(winit::keyboard::KeyCode::KeyX) => { if let Some(s) = self.state.exif_search.cut() { Self::clipboard_set(&s); } }
+                                        PhysicalKey::Code(winit::keyboard::KeyCode::KeyV) => { if let Some(s) = Self::clipboard_get() { self.state.exif_search.insert_str(&s); } }
+                                        _ => { handled = false; }
                                     }
                                 } else if let Some(txt) = &event.text {
                                     // фильтруем управляющие символы
