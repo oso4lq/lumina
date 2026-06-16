@@ -36,6 +36,10 @@ pub enum UserEvent {
         w: u32,
         h: u32,
     },
+    ExifLoaded {
+        generation: u64,
+        result: std::result::Result<crate::exif::tags::ExifTags, String>,
+    },
 }
 
 pub struct AppState {
@@ -63,6 +67,11 @@ pub struct AppState {
     pub swiping: bool,
     pub swipe_press_x: f32,
     pub swipe_anim: bool,
+    pub exif_tags: Option<crate::exif::tags::ExifTags>,
+    pub exif_search: crate::ui::textedit::TextEdit,
+    pub exif_scroll: f32,
+    pub exif_error: Option<String>,
+    pub exif_generation: u64,
 }
 
 impl AppState {
@@ -92,6 +101,11 @@ impl AppState {
             swiping: false,
             swipe_press_x: 0.0,
             swipe_anim: false,
+            exif_tags: None,
+            exif_search: crate::ui::textedit::TextEdit::new(),
+            exif_scroll: 0.0,
+            exif_error: None,
+            exif_generation: 0,
         }
     }
 }
@@ -132,7 +146,10 @@ impl App {
         let proxy = self.proxy.clone();
         if let Some(w) = &self.window {
             let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            let title = format!("{name} · Lumina");
+            let title = match crate::exif::read_model(&path) {
+                Some(model) => format!("{name} · {model} · Lumina"),
+                None => format!("{name} · Lumina"),
+            };
             self.state.ui.title = title.clone();
             w.set_title(&title); // системный заголовок (таскбар/alt-tab)
             w.request_redraw();
@@ -257,8 +274,31 @@ impl App {
             Action::ToggleFullscreen => self.toggle_fullscreen(),
             Action::FitView => self.set_fit_view(),
             Action::ActualSize => self.set_actual_size(),
-            // TODO(v0.4b): переключение EXIF popup появится в последующей задаче.
-            Action::ToggleExif => {}
+            Action::ToggleExif => self.toggle_exif(),
+        }
+    }
+
+    /// Открыть/закрыть EXIF popup. При открытии — async-чтение тегов через exiftool.
+    fn toggle_exif(&mut self) {
+        let open = !self.state.ui.exif_open;
+        self.state.ui.exif_open = open;
+        if open {
+            self.state.exif_tags = None;
+            self.state.exif_error = None;
+            self.state.exif_scroll = 0.0;
+            self.state.exif_search.clear();
+            let Some(cat) = &self.state.catalog else { return };
+            let path = cat.current_path().to_path_buf();
+            self.state.exif_generation += 1;
+            let generation = self.state.exif_generation;
+            let proxy = self.proxy.clone();
+            rayon::spawn(move || {
+                let result = crate::exif::read::read_tags(&path).map_err(|e| e.to_string());
+                let _ = proxy.send_event(UserEvent::ExifLoaded { generation, result });
+            });
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 
@@ -532,6 +572,18 @@ impl ApplicationHandler<UserEvent> for App {
                     wnd.request_redraw();
                 }
             }
+            UserEvent::ExifLoaded { generation, result } => {
+                if generation != self.state.exif_generation || !self.state.ui.exif_open {
+                    return; // устаревший результат или popup уже закрыт
+                }
+                match result {
+                    Ok(tags) => { self.state.exif_tags = Some(tags); self.state.exif_error = None; }
+                    Err(e) => { self.state.exif_tags = None; self.state.exif_error = Some(e); }
+                }
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
         }
     }
 
@@ -618,14 +670,29 @@ impl ApplicationHandler<UserEvent> for App {
                     let win = r.surface_size();
                     let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
                     let thumb_rects = layout::carousel_thumb_rects(l.carousel, &self.state.thumb_aspects, self.state.ui.scroll, self.state.scale);
-                    (l, thumb_rects)
+                    (l, thumb_rects, win)
                 });
-                if let Some((l, thumb_rects)) = prep {
+                if let Some((l, thumb_rects, r_surface_size)) = prep {
                     let window: Vec<usize> = thumb_rects.iter().map(|(i, _)| *i).collect();
                     self.request_thumbnails(window);
                     let bottom_chrome = if self.state.ui.fullscreen { 0.0 } else { l.divider.h + l.bottom_bar.h };
                     let tb = if self.state.ui.fullscreen { 0.0 } else { theme::TITLEBAR_HEIGHT * self.state.scale };
-                    let cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale, &thumb_rects, &self.state.raw_flags);
+                    let mut cmds = scene::build(&self.state.ui, &l, &self.state.theme, self.state.scale, &thumb_rects, &self.state.raw_flags);
+                    if self.state.ui.exif_open {
+                        let filename = self.state.catalog.as_ref()
+                            .and_then(|c| c.current_path().file_name().and_then(|s| s.to_str()).map(|s| s.to_string()))
+                            .unwrap_or_default();
+                        cmds.extend(scene::build_popup(
+                            r_surface_size,
+                            self.state.scale,
+                            &self.state.theme,
+                            &filename,
+                            self.state.exif_tags.as_ref(),
+                            &self.state.exif_search,
+                            self.state.exif_scroll,
+                            self.state.exif_error.as_deref(),
+                        ));
+                    }
                     if let Some(r) = &mut self.renderer {
                         r.set_bottom_chrome_height(bottom_chrome);
                         r.set_titlebar_height(tb);
@@ -690,6 +757,19 @@ impl ApplicationHandler<UserEvent> for App {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 50.0,
                 };
+                // EXIF popup: колесо скроллит список тегов.
+                if self.state.ui.exif_open {
+                    if let (Some(r), Some(tags)) = (&self.renderer, &self.state.exif_tags) {
+                        let win = r.surface_size();
+                        let p = layout::popup_layout(win, self.state.scale);
+                        let content = scene::popup_content_height(tags, &self.state.exif_search, self.state.scale);
+                        let max_scroll = (content - p.body.h).max(0.0);
+                        let step = 40.0 * self.state.scale;
+                        self.state.exif_scroll = (self.state.exif_scroll - lines * step).clamp(0.0, max_scroll);
+                        if let Some(w) = &self.window { w.request_redraw(); }
+                    }
+                    return;
+                }
                 let (win, region) = match &self.renderer {
                     Some(r) => {
                         let win = r.surface_size();
@@ -728,6 +808,17 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::MouseInput { state, button, .. } => {
                 use winit::event::{ElementState, MouseButton};
                 if button == MouseButton::Left {
+                    // EXIF popup перехватывает клики целиком.
+                    if self.state.ui.exif_open {
+                        if state == ElementState::Pressed {
+                            let win = self.renderer.as_ref().map(|r| r.surface_size()).unwrap_or(glam::Vec2::ZERO);
+                            match hit::hit_popup(win, self.state.scale, self.state.cursor) {
+                                hit::PopupRegion::Close | hit::PopupRegion::Outside => self.toggle_exif(),
+                                hit::PopupRegion::Search | hit::PopupRegion::Body => {}
+                            }
+                        }
+                        return;
+                    }
                     match state {
                         ElementState::Pressed => {
                             // клики по регионам UI имеют приоритет над логикой фото
@@ -847,6 +938,41 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::KeyboardInput { event, .. } => {
                 use winit::keyboard::{Key, NamedKey, PhysicalKey};
                 if event.state.is_pressed() {
+                    // Пока EXIF popup открыт — ввод идёт в поиск; шорткаты не срабатывают.
+                    if self.state.ui.exif_open {
+                        let shift = self.state.shift_down;
+                        let mut handled = true;
+                        match event.logical_key.as_ref() {
+                            Key::Named(NamedKey::Escape) => { self.toggle_exif(); }
+                            Key::Named(NamedKey::Backspace) => self.state.exif_search.backspace(),
+                            Key::Named(NamedKey::Delete) => self.state.exif_search.delete(),
+                            Key::Named(NamedKey::ArrowLeft) => self.state.exif_search.move_left(shift),
+                            Key::Named(NamedKey::ArrowRight) => self.state.exif_search.move_right(shift),
+                            Key::Named(NamedKey::Home) => self.state.exif_search.move_home(shift),
+                            Key::Named(NamedKey::End) => self.state.exif_search.move_end(shift),
+                            _ => {
+                                // Ctrl+A — выделить всё; печатаемый текст — вставить.
+                                if self.state.ctrl_down {
+                                    if let PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) = event.physical_key {
+                                        self.state.exif_search.select_all();
+                                    } else {
+                                        handled = false;
+                                    }
+                                } else if let Some(txt) = &event.text {
+                                    // фильтруем управляющие символы
+                                    let s: String = txt.chars().filter(|c| !c.is_control()).collect();
+                                    if s.is_empty() { handled = false; } else { self.state.exif_search.insert_str(&s); }
+                                } else {
+                                    handled = false;
+                                }
+                            }
+                        }
+                        if handled {
+                            self.state.exif_scroll = 0.0; // фильтр изменился → к началу
+                            if let Some(w) = &self.window { w.request_redraw(); }
+                        }
+                        return; // popup поглощает клавиатуру целиком
+                    }
                     // NamedKey-перехваты (сами по себе раскладко-независимы).
                     match event.logical_key.as_ref() {
                         Key::Named(NamedKey::F11) => { self.toggle_fullscreen(); return; }
