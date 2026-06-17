@@ -18,6 +18,7 @@
 | **v0.4a — Трансформации** | 🟢 | Авто-ориентация по EXIF Orientation при декоде (JPEG/TIFF/WebP + Bayer-RAW; HEIC ориентирует libheif), ручной поворот/отражение `R`/`Shift+R`/`H`/`V`/`Ctrl+Z` + кнопка, сессионная память трансформаций | [дизайн](docs/superpowers/specs/2026-06-16-lumina-v0.4a-transforms-design.md) · [план](docs/superpowers/plans/2026-06-16-lumina-v0.4a-transforms.md) |
 | **v0.4c — Навигация и эргономика ввода** | 🟢 | Раскладко-независимые шорткаты (по физ. клавише), экранные стрелки ‹ › на hover (оконный режим), свайп drag-жестом при fit | [дизайн](docs/superpowers/specs/2026-06-16-lumina-v0.4c-navigation-input-design.md) · [план](docs/superpowers/plans/2026-06-16-lumina-v0.4c-navigation-input.md) |
 | **v0.4b — EXIF popup/запись** | 🟢 | Часть 1 (чтение): EXIF popup-просмотрщик (полный браузер тегов exiftool, группировка/поиск/скролл), модель камеры в заголовке. Часть 2 (запись): инлайн-редактирование тегов записываемых групп (EXIF/XMP/IPTC/GPS), запись через exiftool (in-place + `_original`, RAW → XMP sidecar), «Удалить всё GPS», футер Save/Отменить всё, подтверждение несохранённых изменений, clipboard (Ctrl+C/V/X). Бандл exiftool → перенесён в v0.5 (вместе с инсталлятором) | [дизайн ч.1](docs/superpowers/specs/2026-06-16-lumina-v0.4b-exif-design.md) · [дизайн ч.2](docs/superpowers/specs/2026-06-16-lumina-v0.4b-exif-write-design.md) · [план ч.1](docs/superpowers/plans/2026-06-16-lumina-v0.4b-exif-read.md) · [план ч.2](docs/superpowers/plans/2026-06-16-lumina-v0.4b-exif-write.md) |
+| **v0.4d — Починка записи EXIF + режимы сохранения** | 🟢 | Починка записи RAW: **in-place вместо XMP sidecar** (sidecar из v0.4b терял правки) — все форматы пишутся через exiftool in-place. Два режима: обычный (бэкап `_original`, обратимо) и необратимый (`-overwrite_original`, без бэкапа) через тоггл «Необратимо». Действие «Стереть всё» (`-all=` с сохранением Orientation/ICC). Обобщённый `ConfirmKind` (закрытие/перезапись/стирание) | [дизайн](docs/superpowers/specs/2026-06-17-lumina-v0.4d-exif-write-modes-design.md) · [план](docs/superpowers/plans/2026-06-17-lumina-v0.4d-exif-write-modes.md) |
 | **v0.5 — Полировка** | ⚪ | Кэш миниатюр (sled), префетч ±2, folder watcher (notify), свайп трекпадом, installer + реестр, **бандл exiftool** (standalone exe + `exiftool_files` рядом с exe — приложение работает без отдельной установки exiftool) | — |
 | **v0.6 — Slideshow и пр.** | ⚪ | Slideshow (кнопка play-задел уже в fullscreen-оверлее), темизация (System/Dark/Light), multi-monitor fullscreen, режимы сортировки каталога | — |
 
@@ -216,6 +217,38 @@ scene 4, hit 2; +1 `#[ignore]` интеграционный `write_real_jpg_set_
 > **Зависимости:** часть 1 — `serde_json` (разбор JSON exiftool); часть 2 — `arboard` (буфер обмена).
 > Внешний `exiftool.exe` — пока dev-требование (рядом с exe или в PATH); бандл в ассеты — v0.5.
 > Новых нативных зависимостей сборки часть 2 не вводит.
+
+## Прогресс v0.4d (детально)
+
+Дизайн (брейншторм): XMP sidecar для RAW из v0.4b **отвергнут осознанно** — он создавал `.xmp`
+рядом с файлом, но правки не возвращались в сам RAW, поэтому при перечитывании терялись. Решение —
+писать in-place во все форматы (exiftool это умеет и для RAW), а обратимость дать режимом бэкапа.
+Логика — в чистом ядре (`exif::write` — чистые `edit_args`/`strip_args` + тонкая обёртка `run_exiftool`;
+`ui::{theme,layout,scene,hit}` — без GPU); `app.rs` — диспетчер. Новых GPU-пайплайнов нет.
+
+- [x] `exif::write` — убрана ветка sidecar (`-o %d%f.xmp`); `WriteMode { Backup, Overwrite }`,
+      чистые `edit_args(edits, mode)` (пустой список → пустой вектор; `Overwrite` добавляет
+      `-overwrite_original`) и `strip_args()` (`-all=` + `-tagsfromfile @ -orientation -icc_profile
+      -overwrite_original` — стирает всё, сохраняя Orientation/ICC); `write_edits(path, edits, mode)`
+      и `strip_all(path)` поверх единой обёртки `run_exiftool` (с `--` против подмены флагов)
+- [x] UI-ядро: `theme.danger_bg`; геометрия футера `popup_footer_toggle`/`popup_footer_strip`;
+      `ConfirmKind { None, CloseWithPending, OverwriteSave, StripAll }` вместо булева `confirm_close`;
+      `PopupEditState.confirm`/`overwrite_mode`; отрисовка тоггла «Необратимо» (danger-стиль во вкл.),
+      кнопки «Стереть всё» (только в необратимом режиме) и трёх вариантов бара подтверждения;
+      хит-тест `FooterToggle`/`FooterStrip` + обобщённые `ConfirmPrimary/Secondary/Tertiary`
+- [x] Интеграция в `app.rs`: состояние `exif_confirm`/`exif_overwrite_mode`/`exif_pending_strip_all`/
+      `exif_close_after_save`; `exif_save(mode)` + `exif_strip_all` на rayon; тоггл режима;
+      `FooterSave` в необратимом режиме при наличии правок → бар «Перезаписать», иначе обычный Backup;
+      цепочка закрытия-с-правками → подтверждение перезаписи; сброс необратимого режима после успешного
+      сохранения (следующее разрушительное действие — снова осознанное); Esc-приоритет редактор → бар → закрытие
+
+Код и юнит-тесты готовы (151 тест зелёный + 9 `#[ignore]`; 10 новых в v0.4d: write 4, layout 1, scene 3,
+hit 2; +2 новых `#[ignore]` интеграционных — `write_overwrite_no_backup`, `strip_all_removes_pii_keeps_orientation`,
+прогнаны на exiftool 13.59 — зелёные). Визуальную GUI-приёмку (правка RAF in-place без `.xmp`, режимы
+бэкап/необратимо, «Стереть всё», Esc на баре) подтверждает пользователь вручную.
+
+> Известное: поле `exif_pending_strip_all` пока write-only (задел под будущую «эксклюзивность»
+> стирания и построчных правок — в v0.4d не задействовано). **Бандл exiftool — v0.5.**
 
 ## Установленное окружение
 
