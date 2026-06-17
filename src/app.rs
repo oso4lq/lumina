@@ -223,6 +223,9 @@ impl App {
                 .map(|p| p.extension().and_then(|s| s.to_str()).map(|s| s.to_uppercase()).unwrap_or_default())
                 .collect();
         }
+        // Карусель следует за активной фотографией: подкрутить скролл, чтобы выделенная
+        // миниатюра оставалась видна (с запасом 3 миниатюры до края).
+        self.sync_carousel_scroll();
         // Быстрый путь: сосед уже в префетч-кэше → показать мгновенно, без декода.
         if let Some(img) = self.state.prefetch.get(&path) {
             self.show_image(generation, &img);
@@ -591,6 +594,24 @@ impl App {
                 }
             });
         }
+    }
+
+    /// Подкрутить скролл карусели, чтобы активная миниатюра была видна (запас 3 миниатюры
+    /// до края viewport). Вызывается при навигации (load_current). В fullscreen карусели нет —
+    /// расчёт безвреден (скролл не виден).
+    fn sync_carousel_scroll(&mut self) {
+        let Some(r) = &self.renderer else { return };
+        let Some(cat) = &self.state.catalog else { return };
+        let win = r.surface_size();
+        let l = layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen);
+        self.state.ui.scroll = layout::carousel_scroll_for_active(
+            &self.state.thumb_aspects,
+            cat.current_index(),
+            l.carousel.w,
+            self.state.scale,
+            self.state.ui.scroll,
+            3,
+        );
     }
 
     /// Запросить декод миниатюр для индексов окна, которых ещё нет.
@@ -1154,7 +1175,6 @@ impl ApplicationHandler<UserEvent> for App {
                 };
                 let over_carousel = matches!(region, hit::Region::Carousel | hit::Region::Thumbnail(_));
                 if over_carousel {
-                    // горизонтальный скролл карусели
                     let step = 60.0 * self.state.scale;
                     let content = crate::ui::layout::carousel_content_width(&self.state.thumb_aspects, self.state.scale);
                     let view_w = self.renderer.as_ref().map(|r| {
@@ -1162,7 +1182,16 @@ impl ApplicationHandler<UserEvent> for App {
                         layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen).carousel.w
                     }).unwrap_or(0.0);
                     let max_scroll = (content - view_w).max(0.0);
-                    self.state.ui.scroll = (self.state.ui.scroll - lines * step).clamp(0.0, max_scroll);
+                    // Смещение скролла: мышь (LineDelta) — дискретно по строкам; тачпад (PixelDelta) —
+                    // по доминирующей оси в пикселях, так что горизонтальный двухпальцевый жест
+                    // листает ленту напрямую, а вертикальный — как колесо.
+                    let d = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => y * step,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => {
+                            if (p.x as f32).abs() >= (p.y as f32).abs() { p.x as f32 } else { p.y as f32 }
+                        }
+                    };
+                    self.state.ui.scroll = (self.state.ui.scroll - d).clamp(0.0, max_scroll);
                     if let Some(w) = &self.window { w.request_redraw(); }
                 } else if let Some(_win) = win {
                     // Тачпад: горизонтально-доминирующий PixelDelta → пошаговая навигация.

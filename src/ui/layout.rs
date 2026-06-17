@@ -220,6 +220,54 @@ pub fn carousel_thumb_rects(
     out
 }
 
+/// Желаемый скролл карусели (физ. px), чтобы активная миниатюра была видна с запасом
+/// `margin` миниатюр до края viewport. Скроллит минимально: вперёд — когда правый край
+/// (active+margin) уходит за правую границу, назад — когда левый край (active−margin) уходит
+/// за левую. Активная миниатюра видна всегда (приоритетнее запаса). Клампится в [0, max].
+pub fn carousel_scroll_for_active(
+    aspects: &[f32],
+    active: usize,
+    carousel_w: f32,
+    scale: f32,
+    current: f32,
+    margin: usize,
+) -> f32 {
+    let n = aspects.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let gap = theme::THUMB_GAP * scale;
+    let pad = theme::CAROUSEL_PAD * scale;
+    let active = active.min(n - 1);
+    // content-x левого края миниатюры i (с учётом pad)
+    let left_of = |i: usize| -> f32 {
+        let mut x = pad;
+        for j in 0..i {
+            x += thumb_width(aspects[j], scale) + gap;
+        }
+        x
+    };
+    let hi = (active + margin).min(n - 1);
+    let lo = active.saturating_sub(margin);
+    let mut scroll = current;
+    // вперёд: показать правый край (active+margin)
+    let need_min = left_of(hi) + thumb_width(aspects[hi], scale) - carousel_w;
+    if scroll < need_min {
+        scroll = need_min;
+    }
+    // назад: показать левый край (active−margin)
+    let need_max = left_of(lo);
+    if scroll > need_max {
+        scroll = need_max;
+    }
+    // активная миниатюра видна всегда (приоритетнее запаса)
+    let a_min = left_of(active) + thumb_width(aspects[active], scale) - carousel_w;
+    let a_max = left_of(active);
+    scroll = scroll.clamp(a_min.min(a_max), a_max.max(a_min));
+    let max_scroll = (carousel_content_width(aspects, scale) - carousel_w).max(0.0);
+    scroll.clamp(0.0, max_scroll)
+}
+
 /// Полная ширина содержимого карусели (для clamp скролла), физ. px.
 pub fn carousel_content_width(aspects: &[f32], scale: f32) -> f32 {
     let n = aspects.len();
@@ -370,6 +418,38 @@ mod tests {
         assert!(w2 > w1);
         // 1 миниатюра: pad*2 + tw = 20 + 96 = 116
         assert_eq!(w1, 116.0);
+    }
+
+    #[test]
+    fn scroll_for_active_at_start_is_zero() {
+        // viewport вмещает ~8 миниатюр (816 px), запас вперёд (margin=3) помещается → не скроллим
+        let aspects = vec![1.5_f32; 20]; // tw=96, шаг 102, pad=10
+        let s = carousel_scroll_for_active(&aspects, 0, 816.0, 1.0, 0.0, 3);
+        assert_eq!(s, 0.0);
+    }
+
+    #[test]
+    fn scroll_for_active_forward_keeps_margin() {
+        let aspects = vec![1.5_f32; 20];
+        // активная 10, скролл был 0 → подвинуть так, чтобы был виден запас в 3 вперёд (миниатюра 13)
+        let s = carousel_scroll_for_active(&aspects, 10, 816.0, 1.0, 0.0, 3);
+        // правый край миниатюры 13 у правого края viewport: left_13+tw-w = (10+13*102)+96-816 = 616
+        assert!((s - 616.0).abs() < 0.01, "ожидался скролл 616, получено {s}");
+    }
+
+    #[test]
+    fn scroll_for_active_last_clamped_to_content() {
+        let aspects = vec![1.5_f32; 20];
+        let s = carousel_scroll_for_active(&aspects, 19, 816.0, 1.0, 0.0, 3);
+        let max = carousel_content_width(&aspects, 1.0) - 816.0; // 2054 - 816 = 1238
+        assert!(s <= max + 0.01 && s > 0.0, "скролл {s} должен быть в пределах [0,{max}]");
+        // активная (последняя) видна: её правый край у правого края viewport
+        assert!((s - 1228.0).abs() < 0.01, "ожидался скролл 1228, получено {s}");
+    }
+
+    #[test]
+    fn scroll_for_active_empty_is_zero() {
+        assert_eq!(carousel_scroll_for_active(&[], 0, 800.0, 1.0, 50.0, 3), 0.0);
     }
 
     #[test]
