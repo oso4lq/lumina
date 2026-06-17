@@ -43,6 +43,15 @@ pub fn supported(ext: &str) -> bool {
     StandardDecoder::supports(ext) || RawDecoder::supports(ext) || HeicDecoder::supports(ext)
 }
 
+/// Все поддерживаемые расширения (Standard + RAW + HEIC) — для фильтра диалога открытия файла.
+pub fn supported_extensions() -> Vec<&'static str> {
+    let mut v = Vec::new();
+    v.extend_from_slice(standard::EXTS);
+    v.extend_from_slice(raw::EXTS);
+    v.extend_from_slice(heic::EXTS);
+    v
+}
+
 /// Подобрать декодер по расширению. Приоритет: Raw → Heic → Standard.
 pub fn decoder_for(ext: &str) -> Option<Box<dyn Decoder + Send>> {
     if RawDecoder::supports(ext) {

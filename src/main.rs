@@ -24,7 +24,8 @@ fn main() {
     let initial: Option<PathBuf> = match std::env::args().nth(1).map(PathBuf::from) {
         Some(p) if p.exists() => Some(p),
         _ => rfd::FileDialog::new()
-            .add_filter("Изображения", &["jpg", "jpeg", "png", "bmp", "gif", "tiff", "tif", "webp"])
+            // все поддерживаемые форматы, включая RAW (raf/nef/arw/cr2/dng/…) и HEIC/HEIF
+            .add_filter("Изображения", &decoder::supported_extensions())
             .pick_file(),
     };
 

@@ -3,7 +3,7 @@ use crate::error::{LuminaError, Result};
 use libheif_rs::{ColorSpace, HeifContext, LibHeif, RgbChroma};
 use std::path::Path;
 
-const EXTS: &[&str] = &["heic", "heif"];
+pub(crate) const EXTS: &[&str] = &["heic", "heif"];
 
 pub struct HeicDecoder;
 

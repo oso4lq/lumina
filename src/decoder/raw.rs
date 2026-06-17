@@ -6,7 +6,7 @@ use rawler::rawimage::RawPhotometricInterpretation;
 use rawler::rawsource::RawSource;
 use std::path::Path;
 
-const EXTS: &[&str] = &[
+pub(crate) const EXTS: &[&str] = &[
     "raf", "nef", "nrw", "arw", "srf", "cr2", "cr3", "rw2", "orf", "pef", "dng", "rwl", "iiq",
 ];
 

@@ -2,7 +2,7 @@ use super::{Decoder, DecodedImage};
 use crate::error::{LuminaError, Result};
 use std::path::Path;
 
-const EXTS: &[&str] = &["jpg", "jpeg", "jfif", "png", "bmp", "gif", "tiff", "tif", "webp"];
+pub(crate) const EXTS: &[&str] = &["jpg", "jpeg", "jfif", "png", "bmp", "gif", "tiff", "tif", "webp"];
 
 pub struct StandardDecoder;
 
