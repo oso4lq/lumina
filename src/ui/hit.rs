@@ -115,14 +115,15 @@ pub enum PopupRegion {
     GpsDeleteAll(usize),
     FooterSave,
     FooterCancel,
-    ConfirmSave,
-    ConfirmDiscard,
-    ConfirmKeep,
+    FooterToggle,
+    FooterStrip,
+    ConfirmPrimary,   // правая кнопка бара (Сохранить/Перезаписать/Стереть)
+    ConfirmSecondary, // средняя/левая (Отменить/Отмена)
+    ConfirmTertiary,  // третья (Продолжить) — только CloseWithPending
 }
 
-/// Хит-тест popup в режиме редактирования (часть 2): футер, действия строк, GPS-delete-all.
-/// `confirm` — показан ли бар подтверждения закрытия (тогда футер = три кнопки confirm).
-/// Приоритет: confirm/футер → действия строки → Search → Body → Close → Outside.
+/// Хит-тест popup в режиме редактирования (часть 2/v0.4d): футер с тогглом/strip,
+/// бар подтверждения (по `confirm`), действия строк, GPS-delete-all.
 #[allow(clippy::too_many_arguments)]
 pub fn hit_popup_edit(
     win: Vec2,
@@ -131,25 +132,28 @@ pub fn hit_popup_edit(
     tags: &crate::exif::tags::ExifTags,
     filter: &str,
     scroll: f32,
-    confirm: bool,
+    confirm: crate::ui::scene::ConfirmKind,
+    overwrite_mode: bool,
 ) -> PopupRegion {
+    use crate::ui::scene::ConfirmKind;
     let p = crate::ui::layout::popup_layout(win, scale);
-    // close-кнопка заголовка
     if p.close.contains(cursor) {
         return PopupRegion::Close;
     }
-    // футер / подтверждение
     if p.footer.contains(cursor) {
         let (save, cancel) = crate::ui::layout::popup_footer_buttons(&p, scale);
-        if confirm {
-            // три кнопки: используем те же save/cancel + третья слева (Keep)
+        if confirm != ConfirmKind::None {
             if save.contains(cursor) {
-                return PopupRegion::ConfirmSave;
+                return PopupRegion::ConfirmPrimary;
             }
             if cancel.contains(cursor) {
-                return PopupRegion::ConfirmDiscard;
+                return PopupRegion::ConfirmSecondary;
             }
-            return PopupRegion::ConfirmKeep;
+            // третья кнопка (Продолжить) есть только у CloseWithPending
+            if confirm == ConfirmKind::CloseWithPending {
+                return PopupRegion::ConfirmTertiary;
+            }
+            return PopupRegion::Body;
         }
         if save.contains(cursor) {
             return PopupRegion::FooterSave;
@@ -157,13 +161,22 @@ pub fn hit_popup_edit(
         if cancel.contains(cursor) {
             return PopupRegion::FooterCancel;
         }
-        return PopupRegion::Body; // клики по пустому футеру не закрывают
+        if overwrite_mode {
+            let strip = crate::ui::layout::popup_footer_strip(&p, scale);
+            if strip.contains(cursor) {
+                return PopupRegion::FooterStrip;
+            }
+        }
+        let tog = crate::ui::layout::popup_footer_toggle(&p, scale);
+        if tog.contains(cursor) {
+            return PopupRegion::FooterToggle;
+        }
+        return PopupRegion::Body;
     }
     if p.search.contains(cursor) {
         return PopupRegion::Search;
     }
     if p.body.contains(cursor) {
-        // действия строк
         let rows = crate::ui::scene::popup_rows(tags, filter, scale, scroll, p.body);
         for (i, r) in rows.iter().enumerate() {
             if cursor.y < r.y || cursor.y >= r.y + r.h {
@@ -347,15 +360,15 @@ mod tests {
         let tags = crate::exif::tags::ExifTags::default();
         // центр close
         let cc = Vec2::new(p.close.x + p.close.w * 0.5, p.close.y + p.close.h * 0.5);
-        assert_eq!(hit_popup_edit(win, 1.0, cc, &tags, "", 0.0, false), PopupRegion::Close);
+        assert_eq!(hit_popup_edit(win, 1.0, cc, &tags, "", 0.0, crate::ui::scene::ConfirmKind::None, false), PopupRegion::Close);
         // центр поиска
         let cs = Vec2::new(p.search.x + 30.0, p.search.y + p.search.h * 0.5);
-        assert_eq!(hit_popup_edit(win, 1.0, cs, &tags, "", 0.0, false), PopupRegion::Search);
+        assert_eq!(hit_popup_edit(win, 1.0, cs, &tags, "", 0.0, crate::ui::scene::ConfirmKind::None, false), PopupRegion::Search);
         // центр тела (без тегов — строк нет, чистое тело)
         let cb = Vec2::new(p.body.x + 30.0, p.body.y + 30.0);
-        assert_eq!(hit_popup_edit(win, 1.0, cb, &tags, "", 0.0, false), PopupRegion::Body);
+        assert_eq!(hit_popup_edit(win, 1.0, cb, &tags, "", 0.0, crate::ui::scene::ConfirmKind::None, false), PopupRegion::Body);
         // угол окна — вне карточки
-        assert_eq!(hit_popup_edit(win, 1.0, Vec2::new(5.0, 5.0), &tags, "", 0.0, false), PopupRegion::Outside);
+        assert_eq!(hit_popup_edit(win, 1.0, Vec2::new(5.0, 5.0), &tags, "", 0.0, crate::ui::scene::ConfirmKind::None, false), PopupRegion::Outside);
     }
 
     #[test]
@@ -366,8 +379,8 @@ mod tests {
         let sc = Vec2::new(save.x + save.w * 0.5, save.y + save.h * 0.5);
         let cc = Vec2::new(cancel.x + cancel.w * 0.5, cancel.y + cancel.h * 0.5);
         let tags = crate::exif::tags::parse(r#"[{"SourceFile":"a","EXIF:Make":"X"}]"#);
-        assert_eq!(hit_popup_edit(win, 1.0, sc, &tags, "", 0.0, false), PopupRegion::FooterSave);
-        assert_eq!(hit_popup_edit(win, 1.0, cc, &tags, "", 0.0, false), PopupRegion::FooterCancel);
+        assert_eq!(hit_popup_edit(win, 1.0, sc, &tags, "", 0.0, crate::ui::scene::ConfirmKind::None, false), PopupRegion::FooterSave);
+        assert_eq!(hit_popup_edit(win, 1.0, cc, &tags, "", 0.0, crate::ui::scene::ConfirmKind::None, false), PopupRegion::FooterCancel);
     }
 
     #[test]
@@ -380,8 +393,38 @@ mod tests {
         let (edit, del) = crate::ui::scene::popup_row_actions(&rows[i], p.body, 1.0);
         let ec = Vec2::new(edit.x + edit.w * 0.5, edit.y + edit.h * 0.5);
         let dc = Vec2::new(del.x + del.w * 0.5, del.y + del.h * 0.5);
-        assert_eq!(hit_popup_edit(win, 1.0, ec, &tags, "", 0.0, false), PopupRegion::RowEdit(i));
-        assert_eq!(hit_popup_edit(win, 1.0, dc, &tags, "", 0.0, false), PopupRegion::RowDelete(i));
+        assert_eq!(hit_popup_edit(win, 1.0, ec, &tags, "", 0.0, crate::ui::scene::ConfirmKind::None, false), PopupRegion::RowEdit(i));
+        assert_eq!(hit_popup_edit(win, 1.0, dc, &tags, "", 0.0, crate::ui::scene::ConfirmKind::None, false), PopupRegion::RowDelete(i));
+    }
+
+    #[test]
+    fn popup_footer_toggle_and_strip_hit() {
+        use crate::ui::scene::ConfirmKind;
+        let win = Vec2::new(1280.0, 800.0);
+        let p = crate::ui::layout::popup_layout(win, 1.0);
+        let tags = crate::exif::tags::parse(r#"[{"SourceFile":"a","EXIF:Make":"X"}]"#);
+        let tog = crate::ui::layout::popup_footer_toggle(&p, 1.0);
+        let strip = crate::ui::layout::popup_footer_strip(&p, 1.0);
+        let tc = Vec2::new(tog.x + tog.w * 0.5, tog.y + tog.h * 0.5);
+        let sc = Vec2::new(strip.x + strip.w * 0.5, strip.y + strip.h * 0.5);
+        // тоггл кликается всегда
+        assert_eq!(hit_popup_edit(win, 1.0, tc, &tags, "", 0.0, ConfirmKind::None, false), PopupRegion::FooterToggle);
+        // strip — только в необратимом режиме
+        assert_eq!(hit_popup_edit(win, 1.0, sc, &tags, "", 0.0, ConfirmKind::None, true), PopupRegion::FooterStrip);
+        assert_eq!(hit_popup_edit(win, 1.0, sc, &tags, "", 0.0, ConfirmKind::None, false), PopupRegion::Body);
+    }
+
+    #[test]
+    fn popup_confirm_regions_hit() {
+        use crate::ui::scene::ConfirmKind;
+        let win = Vec2::new(1280.0, 800.0);
+        let p = crate::ui::layout::popup_layout(win, 1.0);
+        let (save, cancel) = crate::ui::layout::popup_footer_buttons(&p, 1.0);
+        let tags = crate::exif::tags::parse(r#"[{"SourceFile":"a","EXIF:Make":"X"}]"#);
+        let sc = Vec2::new(save.x + save.w * 0.5, save.y + save.h * 0.5);
+        let cc = Vec2::new(cancel.x + cancel.w * 0.5, cancel.y + cancel.h * 0.5);
+        assert_eq!(hit_popup_edit(win, 1.0, sc, &tags, "", 0.0, ConfirmKind::OverwriteSave, false), PopupRegion::ConfirmPrimary);
+        assert_eq!(hit_popup_edit(win, 1.0, cc, &tags, "", 0.0, ConfirmKind::OverwriteSave, false), PopupRegion::ConfirmSecondary);
     }
 
     #[test]
