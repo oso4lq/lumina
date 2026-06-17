@@ -45,3 +45,6 @@ opt-level = 1          # image-декод в debug иначе мучительн
 
 [profile.dev.package."*"]
 opt-level = 3          # зависимости (wgpu/image) всегда оптимизированы
+
+[dev-dependencies]
+ico = "0.5.0"
