@@ -100,6 +100,27 @@ pub fn on_swipe_release(dx: f32, viewer_w: f32) -> Option<NavDir> {
     }
 }
 
+/// Порог накопленного горизонтального смещения тачпада (логические px) на один шаг навигации.
+pub const TRACKPAD_NAV_STEP_PX: f32 = 80.0;
+
+/// Накопить горизонтальное смещение тачпада и решить, листать ли.
+/// `accum` — аккумулятор (px), мутируется. Возвращает число шагов навигации со знаком:
+/// >0 — next N раз, <0 — prev |N| раз, 0 — пока недостаточно.
+/// Жест считается горизонтальным только при |dx| >= |dy| (иначе вертикальная прокрутка → сброс).
+/// Знак: смахивание влево (dx<0) → next (+1); вправо (dx>0) → prev (−1) — как лента фото.
+pub fn on_trackpad_pan(accum: &mut f32, dx: f32, dy: f32, step_px: f32) -> i32 {
+    if step_px <= 0.0 || dx.abs() < dy.abs() {
+        *accum = 0.0;
+        return 0;
+    }
+    *accum += dx;
+    let steps = (*accum / step_px).trunc() as i32;
+    if steps != 0 {
+        *accum -= steps as f32 * step_px;
+    }
+    -steps // dx<0 → steps<0 → next(+1); dx>0 → steps>0 → prev(−1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +208,45 @@ mod tests {
     #[test]
     fn swipe_zero_width_is_none() {
         assert_eq!(on_swipe_release(500.0, 0.0), None);
+    }
+
+    #[test]
+    fn trackpad_below_threshold_accumulates() {
+        let mut acc = 0.0;
+        // |dx| < порог → 0 шагов, аккумулятор растёт
+        assert_eq!(on_trackpad_pan(&mut acc, -50.0, 0.0, 80.0), 0);
+        assert_eq!(acc, -50.0);
+    }
+
+    #[test]
+    fn trackpad_swipe_left_is_next() {
+        let mut acc = 0.0;
+        // влево (dx<0) на порог → +1 (next); остаток переносится
+        let steps = on_trackpad_pan(&mut acc, -100.0, 0.0, 80.0);
+        assert_eq!(steps, 1);
+        assert!((acc - (-20.0)).abs() < 1e-3, "остаток должен быть −20, был {acc}");
+    }
+
+    #[test]
+    fn trackpad_swipe_right_is_prev() {
+        let mut acc = 0.0;
+        let steps = on_trackpad_pan(&mut acc, 100.0, 0.0, 80.0);
+        assert_eq!(steps, -1);
+        assert!((acc - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn trackpad_vertical_dominant_resets() {
+        let mut acc = -70.0; // был накоплен горизонтальный остаток
+        // вертикальный жест доминирует → 0 и сброс
+        assert_eq!(on_trackpad_pan(&mut acc, 5.0, 60.0, 80.0), 0);
+        assert_eq!(acc, 0.0);
+    }
+
+    #[test]
+    fn trackpad_big_fling_returns_multiple_steps() {
+        let mut acc = 0.0;
+        // 3×порог влево за раз → ядро вернёт 3 (кламп до 1 — на стороне app.rs)
+        assert_eq!(on_trackpad_pan(&mut acc, -240.0, 0.0, 80.0), 3);
     }
 }
