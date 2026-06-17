@@ -5,6 +5,7 @@ mod error;
 mod exif;
 mod input;
 mod platform;
+mod prefetch;
 mod renderer;
 mod thumbcache;
 mod thumbnail;
