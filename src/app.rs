@@ -86,7 +86,10 @@ pub struct AppState {
     pub exif_pending_delete_gps: bool,
     pub exif_editing: Option<(String, String)>,
     pub exif_editor: crate::ui::textedit::TextEdit,
-    pub exif_confirm_close: bool,
+    pub exif_confirm: crate::ui::scene::ConfirmKind,
+    pub exif_overwrite_mode: bool,
+    pub exif_pending_strip_all: bool,
+    pub exif_close_after_save: bool,
     pub exif_hovered_row: Option<usize>,
 }
 
@@ -129,7 +132,10 @@ impl AppState {
             exif_pending_delete_gps: false,
             exif_editing: None,
             exif_editor: crate::ui::textedit::TextEdit::new(),
-            exif_confirm_close: false,
+            exif_confirm: crate::ui::scene::ConfirmKind::None,
+            exif_overwrite_mode: false,
+            exif_pending_strip_all: false,
+            exif_close_after_save: false,
             exif_hovered_row: None,
         }
     }
@@ -319,7 +325,10 @@ impl App {
             self.state.exif_pending_delete_gps = false;
             self.state.exif_editing = None;
             self.state.exif_editor.clear();
-            self.state.exif_confirm_close = false;
+            self.state.exif_confirm = crate::ui::scene::ConfirmKind::None;
+            self.state.exif_overwrite_mode = false;
+            self.state.exif_pending_strip_all = false;
+            self.state.exif_close_after_save = false;
             self.state.exif_hovered_row = None;
             let Some(cat) = &self.state.catalog else { return };
             let path = cat.current_path().to_path_buf();
@@ -337,7 +346,7 @@ impl App {
     }
 
     /// Собрать pending в Vec<TagEdit> и записать через exiftool на rayon.
-    fn exif_save(&mut self) {
+    fn exif_save(&mut self, mode: crate::exif::write::WriteMode) {
         use crate::exif::tags::TagEdit;
         let mut edits: Vec<TagEdit> = Vec::new();
         if self.state.exif_pending_delete_gps {
@@ -358,7 +367,20 @@ impl App {
         let generation = self.state.exif_generation;
         let proxy = self.proxy.clone();
         rayon::spawn(move || {
-            let result = crate::exif::write::write_edits(&path, &edits, crate::exif::write::WriteMode::Backup).map_err(|e| e.to_string());
+            let result = crate::exif::write::write_edits(&path, &edits, mode).map_err(|e| e.to_string());
+            let _ = proxy.send_event(UserEvent::ExifSaved { generation, result });
+        });
+    }
+
+    /// Стереть все метаданные текущего файла (необратимо) на rayon.
+    fn exif_strip_all(&mut self) {
+        let Some(cat) = &self.state.catalog else { return };
+        let path = cat.current_path().to_path_buf();
+        self.state.exif_generation += 1;
+        let generation = self.state.exif_generation;
+        let proxy = self.proxy.clone();
+        rayon::spawn(move || {
+            let result = crate::exif::write::strip_all(&path).map_err(|e| e.to_string());
             let _ = proxy.send_event(UserEvent::ExifSaved { generation, result });
         });
     }
@@ -700,10 +722,13 @@ impl ApplicationHandler<UserEvent> for App {
                         // успех: очистить правки, перечитать теги, обновить заголовок
                         self.state.exif_pending.clear();
                         self.state.exif_pending_delete_gps = false;
+                        self.state.exif_pending_strip_all = false;
                         self.state.exif_editing = None;
                         self.state.exif_error = None;
-                        if self.state.exif_confirm_close {
-                            self.state.exif_confirm_close = false;
+                        self.state.exif_confirm = crate::ui::scene::ConfirmKind::None;
+                        self.state.exif_overwrite_mode = false; // безопасность: следующее сохранение снова осознанное
+                        if self.state.exif_close_after_save {
+                            self.state.exif_close_after_save = false;
                             self.toggle_exif(); // закрыть после сохранения по подтверждению
                             return;
                         }
@@ -874,7 +899,8 @@ impl ApplicationHandler<UserEvent> for App {
                             editor_caret_px: ed_caret_px,
                             editor_sel_px: ed_sel_px,
                             hovered_row: self.state.exif_hovered_row,
-                            confirm_close: self.state.exif_confirm_close,
+                            confirm: self.state.exif_confirm,
+                            overwrite_mode: self.state.exif_overwrite_mode,
                             has_pending: !self.state.exif_pending.is_empty() || self.state.exif_pending_delete_gps,
                         };
                         cmds.extend(scene::build_popup(
@@ -1026,7 +1052,7 @@ impl ApplicationHandler<UserEvent> for App {
                             let filter = self.state.exif_search.text();
                             let empty = crate::exif::tags::ExifTags::default();
                             let tags = self.state.exif_tags.as_ref().unwrap_or(&empty);
-                            let region = hit::hit_popup_edit(win, self.state.scale, self.state.cursor, tags, &filter, self.state.exif_scroll, self.state.exif_confirm_close);
+                            let region = hit::hit_popup_edit(win, self.state.scale, self.state.cursor, tags, &filter, self.state.exif_scroll, self.state.exif_confirm, self.state.exif_overwrite_mode);
                             // строки (owned) — чтобы завершить borrow tags до мутаций self
                             let rows = crate::ui::scene::popup_rows(tags, &filter, self.state.scale, self.state.exif_scroll, layout::popup_layout(win, self.state.scale).body);
                             // активный редактор: клик вне него — коммит
@@ -1035,7 +1061,7 @@ impl ApplicationHandler<UserEvent> for App {
                             }
                             match region {
                                 hit::PopupRegion::Close | hit::PopupRegion::Outside => {
-                                    if self.exif_has_pending() { self.state.exif_confirm_close = true; }
+                                    if self.exif_has_pending() { self.state.exif_confirm = crate::ui::scene::ConfirmKind::CloseWithPending; }
                                     else { self.toggle_exif(); }
                                 }
                                 hit::PopupRegion::Search => {
@@ -1076,15 +1102,56 @@ impl ApplicationHandler<UserEvent> for App {
                                         }
                                     }
                                 }
-                                hit::PopupRegion::FooterSave => { self.exif_save(); }
+                                hit::PopupRegion::FooterToggle => {
+                                    self.state.exif_overwrite_mode = !self.state.exif_overwrite_mode;
+                                    if !self.state.exif_overwrite_mode { self.state.exif_pending_strip_all = false; }
+                                }
+                                hit::PopupRegion::FooterStrip => {
+                                    self.state.exif_confirm = crate::ui::scene::ConfirmKind::StripAll;
+                                }
+                                hit::PopupRegion::FooterSave => {
+                                    if self.state.exif_overwrite_mode && self.exif_has_pending() {
+                                        self.state.exif_confirm = crate::ui::scene::ConfirmKind::OverwriteSave;
+                                    } else {
+                                        self.exif_save(crate::exif::write::WriteMode::Backup);
+                                    }
+                                }
                                 hit::PopupRegion::FooterCancel => {
                                     self.state.exif_pending.clear();
                                     self.state.exif_pending_delete_gps = false;
                                     self.state.exif_editing = None;
                                 }
-                                hit::PopupRegion::ConfirmSave => { self.exif_save(); }
-                                hit::PopupRegion::ConfirmDiscard => { self.state.exif_confirm_close = false; self.toggle_exif(); }
-                                hit::PopupRegion::ConfirmKeep => { self.state.exif_confirm_close = false; }
+                                hit::PopupRegion::ConfirmPrimary => {
+                                    match self.state.exif_confirm {
+                                        crate::ui::scene::ConfirmKind::CloseWithPending => {
+                                            self.state.exif_close_after_save = true;
+                                            if self.state.exif_overwrite_mode {
+                                                self.state.exif_confirm = crate::ui::scene::ConfirmKind::OverwriteSave; // цепочка: подтвердить необратимость
+                                            } else {
+                                                self.state.exif_confirm = crate::ui::scene::ConfirmKind::None;
+                                                self.exif_save(crate::exif::write::WriteMode::Backup);
+                                            }
+                                        }
+                                        crate::ui::scene::ConfirmKind::OverwriteSave => {
+                                            self.state.exif_confirm = crate::ui::scene::ConfirmKind::None;
+                                            self.exif_save(crate::exif::write::WriteMode::Overwrite);
+                                        }
+                                        crate::ui::scene::ConfirmKind::StripAll => {
+                                            self.state.exif_confirm = crate::ui::scene::ConfirmKind::None;
+                                            self.exif_strip_all();
+                                        }
+                                        crate::ui::scene::ConfirmKind::None => {}
+                                    }
+                                }
+                                hit::PopupRegion::ConfirmSecondary => {
+                                    let was = self.state.exif_confirm;
+                                    self.state.exif_confirm = crate::ui::scene::ConfirmKind::None;
+                                    self.state.exif_close_after_save = false;
+                                    if was == crate::ui::scene::ConfirmKind::CloseWithPending { self.toggle_exif(); }
+                                }
+                                hit::PopupRegion::ConfirmTertiary => {
+                                    self.state.exif_confirm = crate::ui::scene::ConfirmKind::None; // Продолжить
+                                }
                             }
                             if let Some(w) = &self.window { w.request_redraw(); }
                         }
@@ -1217,6 +1284,12 @@ impl ApplicationHandler<UserEvent> for App {
                             if self.state.exif_editing.is_some() {
                                 self.state.exif_editing = None;
                                 self.state.exif_editor.clear();
+                                if let Some(w) = &self.window { w.request_redraw(); }
+                                return;
+                            }
+                            if self.state.exif_confirm != crate::ui::scene::ConfirmKind::None {
+                                self.state.exif_confirm = crate::ui::scene::ConfirmKind::None;
+                                self.state.exif_close_after_save = false;
                                 if let Some(w) = &self.window { w.request_redraw(); }
                                 return;
                             }
