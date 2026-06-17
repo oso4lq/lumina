@@ -28,13 +28,22 @@ pub fn exiftool_path() -> PathBuf {
 /// же читается как UTF-8; директива `-charset filename=utf8` сообщает, что имена файлов — в UTF-8.
 /// Каждый аргумент — отдельная строка; `--` завершает опции перед путём (защита от имён, начинающихся с `-`).
 pub fn run_exiftool_argfile(args: &[&str], path: &Path) -> Result<std::process::Output> {
+    // Формат argfile: одна строка = один аргумент. Встроенный перевод строки в аргументе
+    // (напр. многострочное значение тега, введённое пользователем) мог бы инжектировать лишние
+    // опции exiftool — поэтому вырезаем CR/LF из аргументов и отвергаем путь с переводом строки
+    // (на Windows такие имена файлов невозможны, но защищаемся явно).
     let mut content = String::from("-charset\nfilename=utf8\n");
     for a in args {
-        content.push_str(a);
+        let safe = a.replace(['\n', '\r'], "");
+        content.push_str(&safe);
         content.push('\n');
     }
     content.push_str("--\n");
-    content.push_str(&path.to_string_lossy());
+    let path_str = path.to_string_lossy();
+    if path_str.contains(['\n', '\r']) {
+        return Err(LuminaError::Exif(path.to_path_buf(), "путь содержит перевод строки".into()));
+    }
+    content.push_str(&path_str);
     content.push('\n');
 
     let mut child = Command::new(exiftool_path())
