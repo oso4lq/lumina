@@ -148,6 +148,54 @@ mod tests {
 
     #[test]
     #[ignore]
+    fn write_clears_ifd1_artist_duplicate() {
+        // Воспроизводим дубль: IFD0:Artist + IFD1:Artist, затем правим через write_edits
+        // (Set EXIF:Artist) и проверяем, что IFD1-копия физически удалена, а IFD0 = новое значение.
+        // На JPG exiftool создаёт обе копии (на RAF на чтении IFD1 перебивал бы IFD0 — суть бага).
+        let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/red_2x3.jpg");
+        let tmp = std::env::temp_dir().join("lumina_ifd1_dup_test.jpg");
+        std::fs::copy(&src, &tmp).expect("копия фикстуры");
+
+        // подготовка: создать дубль Artist в IFD0 и IFD1 напрямую через exiftool
+        let prep = std::process::Command::new(crate::exif::read::exiftool_path())
+            .args(["-IFD0:Artist=Old", "-IFD1:Artist=Stale", "-overwrite_original"])
+            .arg("--")
+            .arg(&tmp)
+            .output()
+            .expect("подготовка дубля");
+        assert!(prep.status.success(), "prep: {}", String::from_utf8_lossy(&prep.stderr));
+
+        // правка через продакшн-путь
+        write_edits(
+            &tmp,
+            &[TagEdit::Set { group: "EXIF".into(), tag: "Artist".into(), value: "New".into() }],
+            WriteMode::Overwrite,
+        )
+        .expect("запись");
+
+        // проверка: -a -G1 — IFD0:Artist=New, IFD1:Artist отсутствует
+        let out = std::process::Command::new(crate::exif::read::exiftool_path())
+            .args(["-a", "-G1", "-s3", "-Artist"])
+            .arg("--")
+            .arg(&tmp)
+            .output()
+            .expect("чтение -a -G1");
+        let dump = String::from_utf8_lossy(&out.stdout);
+        // после фикса остаётся ровно одна строка Artist (IFD0=New); IFD1-дубль удалён.
+        // `-G1 -s3` печатает значение с префиксом family-1 группы («IFD0 New»), потому
+        // проверяем: одна строка, она из IFD0 со значением New, и нигде нет IFD1.
+        let lines: Vec<&str> = dump.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 1, "ожидалась одна строка Artist, получено: {dump:?}");
+        assert!(
+            lines[0].starts_with("IFD0") && lines[0].contains("New") && !dump.contains("IFD1"),
+            "ожидался только IFD0:Artist=New (без IFD1), получено: {dump:?}"
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    #[ignore]
     fn strip_all_removes_pii_keeps_orientation() {
         let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/red_2x3.jpg");
         let tmp = std::env::temp_dir().join("lumina_strip_test.jpg");

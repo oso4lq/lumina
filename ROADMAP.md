@@ -241,10 +241,13 @@ scene 4, hit 2; +1 `#[ignore]` интеграционный `write_real_jpg_set_
       `FooterSave` в необратимом режиме при наличии правок → бар «Перезаписать», иначе обычный Backup;
       цепочка закрытия-с-правками → подтверждение перезаписи; сброс необратимого режима после успешного
       сохранения (следующее разрушительное действие — снова осознанное); Esc-приоритет редактор → бар → закрытие
+- [x] Фикс read-back правок EXIF на форматах с IFD1-дублями (Fuji зеркалит Artist в thumbnail-IFD):
+      `edits_to_args` очищает `-IFD1:{tag}=` при записи EXIF-тега — иначе exiftool `-json -G` отдавал
+      устаревший IFD1, и правка IFD0 была не видна ([дизайн](docs/superpowers/specs/2026-06-17-lumina-exif-ifd1-duplicate-clear-design.md))
 
-Код и юнит-тесты готовы (151 тест зелёный + 9 `#[ignore]`; 10 новых в v0.4d: write 4, layout 1, scene 3,
-hit 2; +2 новых `#[ignore]` интеграционных — `write_overwrite_no_backup`, `strip_all_removes_pii_keeps_orientation`,
-прогнаны на exiftool 13.59 — зелёные). Визуальную GUI-приёмку (правка RAF in-place без `.xmp`, режимы
+Код и юнит-тесты готовы (154 теста зелёных + 10 `#[ignore]`; 13 новых в v0.4d: write 4, tags 3, layout 1,
+scene 3, hit 2; +3 новых `#[ignore]` интеграционных — `write_overwrite_no_backup`, `strip_all_removes_pii_keeps_orientation`,
+`write_clears_ifd1_artist_duplicate`, прогнаны на exiftool 13.59 — зелёные). Визуальную GUI-приёмку (правка RAF in-place без `.xmp`, режимы
 бэкап/необратимо, «Стереть всё», Esc на баре) подтверждает пользователь вручную.
 
 > **Бандл exiftool — v0.5.**
