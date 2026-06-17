@@ -6,6 +6,7 @@ mod exif;
 mod input;
 mod platform;
 mod renderer;
+mod thumbcache;
 mod thumbnail;
 mod ui;
 mod view;
