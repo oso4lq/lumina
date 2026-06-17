@@ -4,7 +4,6 @@
 use crate::error::{LuminaError, Result};
 use crate::exif::tags::{edits_to_args, TagEdit};
 use std::path::Path;
-use std::process::Command;
 
 /// Режим записи: оставлять ли восстановимый бэкап `_original`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,15 +53,12 @@ pub fn strip_all(path: &Path) -> Result<()> {
     run_exiftool(path, &strip_args())
 }
 
-/// Запустить exiftool с аргументами + `-- path`. `--` завершает разбор опций
-/// (защита от подмены флагов именем файла).
+/// Запустить exiftool с аргументами + путём. Аргументы и путь передаются через UTF-8 argfile
+/// на stdin (`crate::exif::read::run_exiftool_argfile`) — иначе Unicode-пути (кириллица) ломают
+/// standalone-exiftool на Windows (мангелинг argv). `--` и `-charset filename=utf8` добавляет хелпер.
 fn run_exiftool(path: &Path, args: &[String]) -> Result<()> {
-    let out = Command::new(crate::exif::read::exiftool_path())
-        .args(args)
-        .arg("--")
-        .arg(path)
-        .output()
-        .map_err(|e| LuminaError::Exif(path.to_path_buf(), format!("запуск exiftool: {e}")))?;
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = crate::exif::read::run_exiftool_argfile(&arg_refs, path)?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(LuminaError::Exif(path.to_path_buf(), err));
