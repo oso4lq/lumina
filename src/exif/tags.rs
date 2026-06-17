@@ -93,15 +93,30 @@ pub enum TagEdit {
 
 /// Набор правок → аргументы exiftool (без пути; путь добавляет write::write_edits).
 /// `Set` → `-Group:Tag=value`; `Delete` → `-Group:Tag=`; `DeleteAllGps` → `-gps:all=`.
+/// Для группы `EXIF` дополнительно очищается IFD1-дубль (`-IFD1:Tag=`): иначе exiftool при
+/// чтении `-json -G` на дублированном теге (напр. Fuji зеркалит Artist в thumbnail-IFD) отдаёт
+/// устаревшее значение из IFD1, и правка IFD0 «не видна». Для других групп / форматов без IFD1
+/// это безопасный no-op (XMP/IPTC/GPS дублей в IFD1 не имеют; отсутствующий тег — удаление-no-op).
 pub fn edits_to_args(edits: &[TagEdit]) -> Vec<String> {
-    edits
-        .iter()
-        .map(|e| match e {
-            TagEdit::Set { group, tag, value } => format!("-{group}:{tag}={value}"),
-            TagEdit::Delete { group, tag } => format!("-{group}:{tag}="),
-            TagEdit::DeleteAllGps => "-gps:all=".to_string(),
-        })
-        .collect()
+    let mut args = Vec::new();
+    for e in edits {
+        match e {
+            TagEdit::Set { group, tag, value } => {
+                args.push(format!("-{group}:{tag}={value}"));
+                if group == "EXIF" {
+                    args.push(format!("-IFD1:{tag}="));
+                }
+            }
+            TagEdit::Delete { group, tag } => {
+                args.push(format!("-{group}:{tag}="));
+                if group == "EXIF" {
+                    args.push(format!("-IFD1:{tag}="));
+                }
+            }
+            TagEdit::DeleteAllGps => args.push("-gps:all=".to_string()),
+        }
+    }
+    args
 }
 
 #[cfg(test)]
@@ -175,6 +190,7 @@ mod tests {
             args,
             vec![
                 "-EXIF:Artist=Jane".to_string(),
+                "-IFD1:Artist=".to_string(),
                 "-XMP:Rating=".to_string(),
                 "-gps:all=".to_string(),
             ]
@@ -184,5 +200,36 @@ mod tests {
     #[test]
     fn edits_to_args_empty_is_empty() {
         assert!(edits_to_args(&[]).is_empty());
+    }
+
+    #[test]
+    fn edits_to_args_exif_set_clears_ifd1_dup() {
+        let edits = vec![TagEdit::Set { group: "EXIF".into(), tag: "Artist".into(), value: "Jane".into() }];
+        assert_eq!(
+            edits_to_args(&edits),
+            vec!["-EXIF:Artist=Jane".to_string(), "-IFD1:Artist=".to_string()]
+        );
+    }
+
+    #[test]
+    fn edits_to_args_exif_delete_clears_ifd1_dup() {
+        let edits = vec![TagEdit::Delete { group: "EXIF".into(), tag: "Artist".into() }];
+        assert_eq!(
+            edits_to_args(&edits),
+            vec!["-EXIF:Artist=".to_string(), "-IFD1:Artist=".to_string()]
+        );
+    }
+
+    #[test]
+    fn edits_to_args_non_exif_groups_unchanged() {
+        // XMP/IPTC/GPS дублей в IFD1 не имеют — один аргумент на правку
+        let edits = vec![
+            TagEdit::Set { group: "XMP".into(), tag: "Rating".into(), value: "5".into() },
+            TagEdit::Delete { group: "IPTC".into(), tag: "Keywords".into() },
+        ];
+        assert_eq!(
+            edits_to_args(&edits),
+            vec!["-XMP:Rating=5".to_string(), "-IPTC:Keywords=".to_string()]
+        );
     }
 }

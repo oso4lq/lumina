@@ -96,7 +96,10 @@ mod tests {
     #[test]
     fn edit_args_backup_is_plain() {
         let edits = vec![TagEdit::Set { group: "EXIF".into(), tag: "Artist".into(), value: "Jane".into() }];
-        assert_eq!(edit_args(&edits, WriteMode::Backup), vec!["-EXIF:Artist=Jane".to_string()]);
+        assert_eq!(
+            edit_args(&edits, WriteMode::Backup),
+            vec!["-EXIF:Artist=Jane".to_string(), "-IFD1:Artist=".to_string()]
+        );
     }
 
     #[test]
