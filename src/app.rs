@@ -509,8 +509,26 @@ impl App {
             let proxy = self.proxy.clone();
             let ext = crate::decoder::ext_lower(&path);
             rayon::spawn(move || {
+                // Ключ кэша по метаданным файла (mtime+size инвалидируют при правке).
+                let key = std::fs::metadata(&path).ok().map(|md| {
+                    let mtime = md.modified().ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    crate::thumbcache::cache_key(&path, mtime, md.len(), th)
+                });
+                let dir = crate::thumbcache::cache_dir();
+                // 1) попытка из дискового кэша
+                if let Some(k) = &key {
+                    if let Some(img) = crate::thumbcache::load(&dir, k) {
+                        let _ = proxy.send_event(UserEvent::Thumbnail {
+                            generation, index, rgba: img.rgba, w: img.width, h: img.height,
+                        });
+                        return;
+                    }
+                }
+                // 2) промах → декод (встроенное превью если есть, иначе полный) + ресайз + запись в кэш
                 let Some(decoder) = crate::decoder::decoder_for(&ext) else { return };
-                // источник: встроенное превью если есть, иначе полный декод
                 let decoded = match decoder.decode_preview(&path) {
                     Ok(Some(img)) => Some(img),
                     _ => decoder.decode_full(&path).ok(),
@@ -520,6 +538,9 @@ impl App {
                     return;
                 };
                 let (rgba, w, h) = crate::app::make_thumb(&img.rgba, img.width, img.height, th);
+                if let Some(k) = &key {
+                    crate::thumbcache::store(&dir, k, &DecodedImage { rgba: rgba.clone(), width: w, height: h });
+                }
                 let _ = proxy.send_event(UserEvent::Thumbnail { generation, index, rgba, w, h });
             });
         }
@@ -591,6 +612,12 @@ impl ApplicationHandler<UserEvent> for App {
         }
 
         self.window = Some(window);
+
+        // Разовая эвикция дискового кэша миниатюр (фоном, бюджет 256 МБ).
+        rayon::spawn(|| {
+            const THUMB_CACHE_BUDGET: u64 = 256 * 1024 * 1024;
+            crate::thumbcache::prune(&crate::thumbcache::cache_dir(), THUMB_CACHE_BUDGET);
+        });
 
         // Открыть стартовый файл, если был передан.
         if let Some(path) = self.initial_path.take() {
