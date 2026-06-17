@@ -11,6 +11,7 @@ mod thumbcache;
 mod thumbnail;
 mod ui;
 mod view;
+mod watcher;
 
 use app::{App, UserEvent};
 use std::path::PathBuf;

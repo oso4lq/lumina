@@ -49,6 +49,8 @@ pub enum UserEvent {
         path: PathBuf,
         image: DecodedImage,
     },
+    /// Содержимое открытой папки изменилось (от наблюдателя ФС) — пере-сканировать каталог.
+    FolderChanged,
 }
 
 pub struct AppState {
@@ -156,6 +158,8 @@ pub struct App {
     state: AppState,
     proxy: EventLoopProxy<UserEvent>,
     initial_path: Option<PathBuf>,
+    /// Наблюдатель за открытой папкой (Drop останавливает поток); пересоздаётся при смене папки.
+    _watcher: Option<crate::watcher::FolderWatcher>,
 }
 
 impl App {
@@ -166,6 +170,7 @@ impl App {
             state: AppState::new(),
             proxy,
             initial_path,
+            _watcher: None,
         }
     }
 
@@ -452,6 +457,10 @@ impl App {
         match FolderCatalog::open(&path) {
             Ok(cat) => {
                 self.state.catalog = Some(cat);
+                // Наблюдать за папкой открытого файла (авто-обновление каталога).
+                if let Some(dir) = path.parent() {
+                    self._watcher = crate::watcher::FolderWatcher::watch(dir, self.proxy.clone());
+                }
                 self.state.view = ViewTransform::new();
                 self.state.inited_generation = None;
                 self.state.thumbs.reset();
@@ -764,6 +773,19 @@ impl ApplicationHandler<UserEvent> for App {
                 self.state.prefetch_inflight.remove(&path);
                 self.state.prefetch.insert(path, std::sync::Arc::new(image));
                 // вид не трогаем: это лишь наполнение горячего кэша
+            }
+            UserEvent::FolderChanged => {
+                let changed = self.state.catalog.as_mut().map(|c| c.refresh().unwrap_or(false)).unwrap_or(false);
+                if changed {
+                    // индексы съехали → сбросить миниатюры (видимые перезапросятся) и аспекты;
+                    // префетч-кэш по путям остаётся валиден, но in-flight по старым индексам сбрасываем;
+                    // load_current пере-вычислит все производные UI-данные и перезагрузит текущий кадр.
+                    self.state.thumb_aspects.clear();
+                    self.state.thumbs.reset();
+                    self.state.prefetch.clear();
+                    self.state.prefetch_inflight.clear();
+                    self.load_current();
+                }
             }
             UserEvent::Thumbnail { generation, index, rgba, w, h } => {
                 // каждый спавн декода шлёт ровно одно событие → освобождаем слот троттлинга

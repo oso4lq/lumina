@@ -23,6 +23,8 @@ glyphon    = "0.6"               # рендер текста поверх wgpu (
 kamadak-exif = "0.5"             # чтение EXIF Orientation (pure-Rust)
 serde_json = "1"                 # разбор JSON-вывода exiftool
 arboard    = "3"                 # буфер обмена (Ctrl+C/V/X)
+notify = "8.2.0"
+notify-debouncer-mini = "0.7.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
