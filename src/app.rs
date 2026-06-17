@@ -44,6 +44,11 @@ pub enum UserEvent {
         generation: u64,
         result: std::result::Result<(), String>,
     },
+    /// Упреждённый сосед декодирован — положить в префетч-кэш (вид не трогаем).
+    Prefetched {
+        path: PathBuf,
+        image: DecodedImage,
+    },
 }
 
 pub struct AppState {
@@ -90,6 +95,10 @@ pub struct AppState {
     pub exif_overwrite_mode: bool,
     pub exif_close_after_save: bool,
     pub exif_hovered_row: Option<usize>,
+    /// In-memory кэш декодированных кадров для мгновенной навигации (префетч ±2).
+    pub prefetch: crate::prefetch::PrefetchCache,
+    /// Пути соседей, для которых уже запущен фоновый декод (защита от повторных спавнов).
+    pub prefetch_inflight: std::collections::HashSet<PathBuf>,
 }
 
 impl AppState {
@@ -135,6 +144,8 @@ impl AppState {
             exif_overwrite_mode: false,
             exif_close_after_save: false,
             exif_hovered_row: None,
+            prefetch: crate::prefetch::PrefetchCache::new(512 * 1024 * 1024),
+            prefetch_inflight: std::collections::HashSet::new(),
         }
     }
 }
@@ -203,6 +214,12 @@ impl App {
                 .iter()
                 .map(|p| p.extension().and_then(|s| s.to_str()).map(|s| s.to_uppercase()).unwrap_or_default())
                 .collect();
+        }
+        // Быстрый путь: сосед уже в префетч-кэше → показать мгновенно, без декода.
+        if let Some(img) = self.state.prefetch.get(&path) {
+            self.show_image(generation, &img);
+            self.prefetch_neighbors();
+            return;
         }
         let ext = crate::decoder::ext_lower(&path);
         rayon::spawn(move || {
@@ -438,6 +455,8 @@ impl App {
                 self.state.view = ViewTransform::new();
                 self.state.inited_generation = None;
                 self.state.thumbs.reset();
+                self.state.prefetch.clear();
+                self.state.prefetch_inflight.clear();
                 self.state.transforms.clear();
                 // сброс аспектов миниатюр: смена папки → reconcile_aspects пере-инициализирует
                 self.state.thumb_aspects.clear();
@@ -478,6 +497,75 @@ impl App {
         };
         if moved {
             self.load_current();
+        }
+    }
+
+    /// Установить показываемый кадр в рендерер и (на первом кадре генерации) инициализировать вид.
+    /// Единый путь и для результата декода (`Decoded`), и для хита префетч-кэша.
+    fn show_image(&mut self, generation: u64, img: &DecodedImage) {
+        let new_img = glam::Vec2::new(img.width as f32, img.height as f32);
+        if let Some(r) = &mut self.renderer {
+            let old_img = r.image_size();
+            r.upload_texture(&img.rgba, img.width, img.height);
+            let win = r.viewer_size();
+            if self.state.inited_generation != Some(generation) {
+                // первый кадр этой генерации → инициализация вида (как v0.1)
+                let z = self.state.view.fit_zoom(win, new_img);
+                self.state.view.set_min_zoom(z);
+                self.state.view.set_zoom_immediate(z);
+                self.state.view.set_fit(true);
+                self.state.view.set_pan(glam::Vec2::ZERO);
+                self.state.inited_generation = Some(generation);
+            } else if let Some(old_img) = old_img {
+                // подмена preview→full: сохраняем экранный размер
+                self.state.view.rescale_for_new_image(win, old_img, new_img);
+            }
+        }
+        // мета-панель текущего фото
+        if let Some(cat) = &self.state.catalog {
+            let path = cat.current_path();
+            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_uppercase();
+            let is_raw = RawDecoder::supports(&crate::decoder::ext_lower(path));
+            let format_label = if is_raw { format!("{ext} · RAW") } else { ext };
+            let mp = (img.width as f32 * img.height as f32) / 1_000_000.0;
+            self.state.ui.meta = Some(FileMeta {
+                format_label,
+                megapixels: mp,
+                width: img.width,
+                height: img.height,
+                bytes,
+            });
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Запустить фоновый декод соседей (±1, ±2), которых ещё нет в кэше и не в работе.
+    fn prefetch_neighbors(&mut self) {
+        let Some(cat) = &self.state.catalog else { return };
+        let cur = cat.current_index();
+        let files = cat.files();
+        let n = files.len();
+        let mut targets: Vec<PathBuf> = Vec::new();
+        for d in [1usize, 2usize] {
+            if cur + d < n { targets.push(files[cur + d].to_path_buf()); }
+            if cur >= d { targets.push(files[cur - d].to_path_buf()); }
+        }
+        for path in targets {
+            if self.state.prefetch.contains(&path) || self.state.prefetch_inflight.contains(&path) {
+                continue;
+            }
+            self.state.prefetch_inflight.insert(path.clone());
+            let proxy = self.proxy.clone();
+            let ext = crate::decoder::ext_lower(&path);
+            rayon::spawn(move || {
+                let Some(decoder) = crate::decoder::decoder_for(&ext) else { return };
+                if let Ok(img) = decoder.decode_full(&path) {
+                    let _ = proxy.send_event(UserEvent::Prefetched { path, image: img });
+                }
+            });
         }
     }
 
@@ -654,42 +742,15 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 match result {
                     Ok(img) => {
-                        let new_img = glam::Vec2::new(img.width as f32, img.height as f32);
-                        if let Some(r) = &mut self.renderer {
-                            let old_img = r.image_size();
-                            r.upload_texture(&img.rgba, img.width, img.height);
-                            let win = r.viewer_size();
-                            if self.state.inited_generation != Some(generation) {
-                                // первый кадр этой генерации → инициализация вида (как v0.1)
-                                let z = self.state.view.fit_zoom(win, new_img);
-                                self.state.view.set_min_zoom(z);
-                                self.state.view.set_zoom_immediate(z);
-                                self.state.view.set_fit(true);
-                                self.state.view.set_pan(glam::Vec2::ZERO);
-                                self.state.inited_generation = Some(generation);
-                            } else if let Some(old_img) = old_img {
-                                // подмена preview→full: сохраняем экранный размер
-                                self.state.view.rescale_for_new_image(win, old_img, new_img);
+                        self.show_image(generation, &img);
+                        // Полноразмерный кадр → в префетч-кэш + упредить соседей.
+                        // Превью не кэшируем (это не full-res).
+                        if stage == Stage::Full {
+                            if let Some(cat) = &self.state.catalog {
+                                let p = cat.current_path().to_path_buf();
+                                self.state.prefetch.insert(p, std::sync::Arc::new(img));
                             }
-                        }
-                        // мета-панель текущего фото
-                        if let Some(cat) = &self.state.catalog {
-                            let path = cat.current_path();
-                            let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-                            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_uppercase();
-                            let is_raw = RawDecoder::supports(&crate::decoder::ext_lower(path));
-                            let format_label = if is_raw { format!("{ext} · RAW") } else { ext };
-                            let mp = (img.width as f32 * img.height as f32) / 1_000_000.0;
-                            self.state.ui.meta = Some(FileMeta {
-                                format_label,
-                                megapixels: mp,
-                                width: img.width,
-                                height: img.height,
-                                bytes,
-                            });
-                        }
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
+                            self.prefetch_neighbors();
                         }
                     }
                     Err(e) => {
@@ -698,6 +759,11 @@ impl ApplicationHandler<UserEvent> for App {
                             if stage == Stage::Preview { "preview" } else { "full" });
                     }
                 }
+            }
+            UserEvent::Prefetched { path, image } => {
+                self.state.prefetch_inflight.remove(&path);
+                self.state.prefetch.insert(path, std::sync::Arc::new(image));
+                // вид не трогаем: это лишь наполнение горячего кэша
             }
             UserEvent::Thumbnail { generation, index, rgba, w, h } => {
                 // каждый спавн декода шлёт ровно одно событие → освобождаем слот троттлинга
