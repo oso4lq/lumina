@@ -26,6 +26,7 @@ pub const GLYPH_PLAY: char = '\u{ED46}';       // ti-player-play
 pub const GLYPH_FS_EXIT: char = '\u{EA29}';    // ti-arrows-minimize (выход из fullscreen)
 pub const GLYPH_CHEVRON_LEFT: char = '\u{EA60}';  // ti-chevron-left
 pub const GLYPH_CHEVRON_RIGHT: char = '\u{EA61}'; // ti-chevron-right
+pub const GLYPH_CHECK: char = '\u{EA5E}';         // ti-check (галочка в чекбоксе)
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IconFont {
@@ -673,6 +674,10 @@ pub fn build_popup(
             let box_r = Rect { x: tog.x, y: tog.y + (tog.h - box_sz) * 0.5, w: box_sz, h: box_sz };
             let box_bg = if edit.overwrite_mode { theme.danger } else { theme.popup_field_bg };
             cmds.push(DrawCmd::Rect { rect: box_r, color: box_bg, radius: 3.0 * scale, layer: RectLayer::Bg });
+            // белая галочка в красном боксе при включённом необратимом режиме
+            if edit.overwrite_mode {
+                cmds.push(DrawCmd::Icon { rect: box_r, glyph: GLYPH_CHECK, size: box_sz, color: theme.text_primary, font: IconFont::Tabler });
+            }
             let lbl = Rect { x: box_r.x + box_sz + 6.0 * scale, y: tog.y, w: tog.w - box_sz - 6.0 * scale, h: tog.h };
             let lbl_col = if edit.overwrite_mode { theme.danger } else { theme.text_secondary };
             cmds.push(DrawCmd::Text { rect: lbl, text: "Необратимо".to_string(), size: theme::POPUP_BTN_SIZE * scale, color: lbl_col, align: Align::Left, clip: Some(lbl) });
@@ -681,7 +686,7 @@ pub fn build_popup(
                 let strip = crate::ui::layout::popup_footer_strip(&p, scale);
                 btn_text(&mut cmds, strip, "Стереть всё", theme.danger_bg, theme.danger);
             }
-            btn_text(&mut cmds, cancel, "Отменить всё", theme.button_hover, theme.text_primary);
+            btn_text(&mut cmds, cancel, "Отменить", theme.button_hover, theme.text_primary);
             let (sbg, sfg) = if edit.has_pending { (theme.save_bg, theme.text_primary) } else { (theme.button_hover, theme.text_secondary) };
             btn_text(&mut cmds, save, "Сохранить", sbg, sfg);
         }
@@ -858,7 +863,7 @@ mod tests {
         let edit = empty_edit(&editor);
         let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
         let has_save = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Сохранить"));
-        let has_cancel = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Отменить всё"));
+        let has_cancel = cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Отменить"));
         assert!(has_save && has_cancel);
     }
 
@@ -989,6 +994,20 @@ mod tests {
         let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
         assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Стереть всё")));
         assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Необратимо")));
+        // галочка в чекбоксе при включённом необратимом режиме
+        assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Icon { glyph, .. } if *glyph == GLYPH_CHECK)));
+    }
+
+    #[test]
+    fn popup_no_check_glyph_when_reversible() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let search = crate::ui::textedit::TextEdit::new();
+        let editor = crate::ui::textedit::TextEdit::new();
+        let edit = empty_edit(&editor); // overwrite_mode = false
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
+        assert!(!cmds.iter().any(|c| matches!(c, DrawCmd::Icon { glyph, .. } if *glyph == GLYPH_CHECK)));
     }
 
     #[test]

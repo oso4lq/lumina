@@ -407,11 +407,23 @@ impl App {
         });
     }
 
-    /// Завершить инлайн-редактирование: записать значение редактора в pending.
+    /// Завершить инлайн-редактирование: записать значение в pending ТОЛЬКО при реальном
+    /// изменении. Если значение совпало с исходным (вход в поле и выход без правки) — снять
+    /// возможную прежнюю правку, чтобы поле не подсвечивалось как изменённое.
     fn exif_commit_edit(&mut self) {
         if let Some((g, t)) = self.state.exif_editing.take() {
             let v = self.state.exif_editor.text();
-            self.state.exif_pending.insert((g, t), crate::ui::scene::PendingOp::Set(v));
+            let original = self
+                .state
+                .exif_tags
+                .as_ref()
+                .and_then(|tags| crate::exif::tags::get(tags, &g, &t))
+                .unwrap_or_default();
+            if v == original {
+                self.state.exif_pending.remove(&(g, t));
+            } else {
+                self.state.exif_pending.insert((g, t), crate::ui::scene::PendingOp::Set(v));
+            }
         }
     }
 
