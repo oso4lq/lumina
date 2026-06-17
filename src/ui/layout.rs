@@ -171,6 +171,21 @@ pub fn popup_footer_buttons(p: &PopupLayout, scale: f32) -> (Rect, Rect) {
     (save, cancel)
 }
 
+/// Кликабельная зона чекбокс-тоггла «Необратимо» (левый край футера): бокс + подпись.
+pub fn popup_footer_toggle(p: &PopupLayout, scale: f32) -> Rect {
+    let pad = theme::POPUP_PAD * scale;
+    let h = 20.0 * scale;
+    Rect { x: p.footer.x + pad, y: p.footer.y + (p.footer.h - h) * 0.5, w: 150.0 * scale, h }
+}
+
+/// Кнопка «Стереть всё» — слева от cancel (показывается только в необратимом режиме).
+pub fn popup_footer_strip(p: &PopupLayout, scale: f32) -> Rect {
+    let (_save, cancel) = popup_footer_buttons(p, scale);
+    let bw = 96.0 * scale;
+    let gap = 8.0 * scale;
+    Rect { x: cancel.x - gap - bw, y: cancel.y, w: bw, h: cancel.h }
+}
+
 /// Физическая ширина миниатюры по аспекту фото (высота фиксирована).
 /// `ar` ≤ 0 трактуется как плейсхолдер (фото ещё не загружено).
 pub fn thumb_width(ar: f32, scale: f32) -> f32 {
@@ -400,6 +415,22 @@ mod tests {
         assert!(p.card.x >= 39.0);
         assert!(p.card.w <= 400.0 - 2.0 * 40.0 + 0.5);
         assert!(p.card.h <= 300.0 - 2.0 * 40.0 + 0.5);
+    }
+
+    #[test]
+    fn popup_footer_toggle_and_strip_geometry() {
+        let win = Vec2::new(1280.0, 800.0);
+        let p = popup_layout(win, 1.0);
+        let tog = popup_footer_toggle(&p, 1.0);
+        let strip = popup_footer_strip(&p, 1.0);
+        let (_save, cancel) = popup_footer_buttons(&p, 1.0);
+        // тоггл у левого края футера
+        assert!((tog.x - (p.footer.x + 12.0)).abs() < 0.5);
+        // strip слева от cancel и правее тоггла (без наложения)
+        assert!(strip.x < cancel.x);
+        assert!(strip.x > tog.x + tog.w);
+        // внутри футера по вертикали
+        assert!(strip.y >= p.footer.y - 0.5 && strip.y + strip.h <= p.footer.y + p.footer.h + 0.5);
     }
 
     #[test]

@@ -113,6 +113,8 @@ pub struct ThemePalette {
     pub danger: [f32; 4],
     /// Маркер изменённого значения (pending Set) — цвет текста.
     pub pending_mark: [f32; 4],
+    /// Фон опасного действия (необратимый тоггл / «Стереть всё»).
+    pub danger_bg: [f32; 4],
 }
 
 impl ThemePalette {
@@ -136,6 +138,7 @@ impl ThemePalette {
             save_bg: rgba(0x2f, 0x6f, 0xd6, 1.0),
             danger: rgba(0xe0, 0x5a, 0x4a, 1.0),
             pending_mark: rgba(0x6f, 0xb0, 0x6f, 1.0),
+            danger_bg: rgba(0xe0, 0x5a, 0x4a, 0.22),
         }
     }
 }
