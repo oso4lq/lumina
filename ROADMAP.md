@@ -294,6 +294,23 @@ prefetch 4). Визуальную приёмку (кэш переживает п
 Визуальную приёмку (двухпальцевый горизонтальный жест листает; вертикаль зумит; мышь зумит)
 подтверждает пользователь вручную на устройстве с тачпадом.
 
+## Прогресс v0.5d (детально)
+
+Цель — portable .zip (инсталлятор/ассоциации в реестре — отдельный последующий цикл v0.5e).
+
+- [x] Иконка приложения: `make_icon` (example, крейт `ico`) из `app-icon.png` →
+      `assets/icon/{lumina.ico (7 размеров), lumina-256.png}` (коммитятся); `build.rs`+`embed-resource`
+      встраивает ICO в exe (taskbar/проводник); `app.rs` ставит иконку окна (winit `with_window_icon`)
+- [x] Portable-дистрибутив (`packaging/package.ps1`): `cargo build --release` → staging с `lumina.exe`
+      + `heif/libde265/libx265.dll` (vcpkg bin) + standalone `exiftool`(+`exiftool_files`) + README +
+      `licenses/` → `dist/Lumina-<версия>-x64.zip`. Запуск на чистой Windows без vcpkg/PATH.
+      Механика проверена end-to-end (zip 11.7 МБ, exe 29 МБ); реальный релиз требует настоящего
+      standalone exiftool ([дизайн](docs/superpowers/specs/2026-06-17-lumina-v0.5d-distribution-design.md))
+
+Инсталлятор (Inno Setup), ассоциации файлов в реестре — отложены в v0.5e. `dist/` в `.gitignore`.
+Визуальную приёмку (запуск распакованного zip на машине без vcpkg/exiftool: JPG/HEIC/EXIF работают,
+иконка корректна) подтверждает пользователь вручную.
+
 ## Установленное окружение
 
 - 🟢 Rust 1.96.0 stable (`x86_64-pc-windows-msvc`)
