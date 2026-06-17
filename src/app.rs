@@ -358,7 +358,7 @@ impl App {
         let generation = self.state.exif_generation;
         let proxy = self.proxy.clone();
         rayon::spawn(move || {
-            let result = crate::exif::write::write_edits(&path, &edits).map_err(|e| e.to_string());
+            let result = crate::exif::write::write_edits(&path, &edits, crate::exif::write::WriteMode::Backup).map_err(|e| e.to_string());
             let _ = proxy.send_event(UserEvent::ExifSaved { generation, result });
         });
     }
