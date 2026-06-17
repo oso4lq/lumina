@@ -1269,9 +1269,11 @@ impl ApplicationHandler<UserEvent> for App {
                                     }
                                 }
                                 hit::PopupRegion::FooterCancel => {
+                                    // отменить все правки и закрыть popup
                                     self.state.exif_pending.clear();
                                     self.state.exif_pending_delete_gps = false;
                                     self.state.exif_editing = None;
+                                    self.toggle_exif();
                                 }
                                 hit::PopupRegion::ConfirmPrimary => {
                                     match self.state.exif_confirm {
