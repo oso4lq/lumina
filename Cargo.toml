@@ -3,6 +3,7 @@ name = "lumina"
 version = "0.1.0"
 edition = "2021"
 default-run = "lumina"          # `cargo run` запускает viewer, а не make_fixtures
+build = "build.rs"              # встраивание иконки в exe (только Windows)
 
 [dependencies]
 winit      = "0.30"
@@ -48,3 +49,6 @@ opt-level = 3          # зависимости (wgpu/image) всегда опт
 
 [dev-dependencies]
 ico = "0.5.0"
+
+[build-dependencies]
+embed-resource = "3.0.9"
