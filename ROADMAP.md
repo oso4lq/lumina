@@ -19,7 +19,7 @@
 | **v0.4c — Навигация и эргономика ввода** | 🟢 | Раскладко-независимые шорткаты (по физ. клавише), экранные стрелки ‹ › на hover (оконный режим), свайп drag-жестом при fit | [дизайн](docs/superpowers/specs/2026-06-16-lumina-v0.4c-navigation-input-design.md) · [план](docs/superpowers/plans/2026-06-16-lumina-v0.4c-navigation-input.md) |
 | **v0.4b — EXIF popup/запись** | 🟢 | Часть 1 (чтение): EXIF popup-просмотрщик (полный браузер тегов exiftool, группировка/поиск/скролл), модель камеры в заголовке. Часть 2 (запись): инлайн-редактирование тегов записываемых групп (EXIF/XMP/IPTC/GPS), запись через exiftool (in-place + `_original`, RAW → XMP sidecar), «Удалить всё GPS», футер Save/Отменить всё, подтверждение несохранённых изменений, clipboard (Ctrl+C/V/X). Бандл exiftool → перенесён в v0.5 (вместе с инсталлятором) | [дизайн ч.1](docs/superpowers/specs/2026-06-16-lumina-v0.4b-exif-design.md) · [дизайн ч.2](docs/superpowers/specs/2026-06-16-lumina-v0.4b-exif-write-design.md) · [план ч.1](docs/superpowers/plans/2026-06-16-lumina-v0.4b-exif-read.md) · [план ч.2](docs/superpowers/plans/2026-06-16-lumina-v0.4b-exif-write.md) |
 | **v0.4d — Починка записи EXIF + режимы сохранения** | 🟢 | Починка записи RAW: **in-place вместо XMP sidecar** (sidecar из v0.4b терял правки) — все форматы пишутся через exiftool in-place. Два режима: обычный (бэкап `_original`, обратимо) и необратимый (`-overwrite_original`, без бэкапа) через тоггл «Необратимо». Действие «Стереть всё» (`-all=` с сохранением Orientation/ICC). Обобщённый `ConfirmKind` (закрытие/перезапись/стирание) | [дизайн](docs/superpowers/specs/2026-06-17-lumina-v0.4d-exif-write-modes-design.md) · [план](docs/superpowers/plans/2026-06-17-lumina-v0.4d-exif-write-modes.md) |
-| **v0.5 — Полировка** | ⚪ | Кэш миниатюр (sled), префетч ±2, folder watcher (notify), свайп трекпадом, installer + реестр, **бандл exiftool** (standalone exe + `exiftool_files` рядом с exe — приложение работает без отдельной установки exiftool) | — |
+| **v0.5 — Полировка** | 🟡 | Кэш миниатюр (диск), префетч ±2, folder watcher (notify), свайп трекпадом, installer + реестр, **бандл exiftool** (standalone exe + `exiftool_files` рядом с exe — приложение работает без отдельной установки exiftool) | A: [дизайн](docs/superpowers/specs/2026-06-17-lumina-v0.5a-thumbnail-cache-prefetch-design.md) · [план](docs/superpowers/plans/2026-06-17-lumina-v0.5a-thumbnail-cache-prefetch.md) · B: [дизайн](docs/superpowers/specs/2026-06-17-lumina-v0.5b-folder-watcher-design.md) · [план](docs/superpowers/plans/2026-06-17-lumina-v0.5b-folder-watcher.md) · C: [дизайн](docs/superpowers/specs/2026-06-17-lumina-v0.5c-trackpad-swipe-design.md) · [план](docs/superpowers/plans/2026-06-17-lumina-v0.5c-trackpad-swipe.md) · D: [дизайн](docs/superpowers/specs/2026-06-17-lumina-v0.5d-distribution-design.md) · [план](docs/superpowers/plans/2026-06-17-lumina-v0.5d-distribution.md) |
 | **v0.6 — Slideshow и пр.** | ⚪ | Slideshow (кнопка play-задел уже в fullscreen-оверлее), темизация (System/Dark/Light), multi-monitor fullscreen, режимы сортировки каталога | — |
 
 ## Прогресс v0.1 (детально)
@@ -251,6 +251,24 @@ scene 3, hit 2; +3 новых `#[ignore]` интеграционных — `writ
 бэкап/необратимо, «Стереть всё», Esc на баре) подтверждает пользователь вручную.
 
 > **Бандл exiftool — v0.5.**
+
+## Прогресс v0.5a (детально)
+
+Дизайн: два независимых кэш-слоя «чистое ядро + тонкая обёртка», декод остаётся на rayon.
+
+- [x] Дисковый кэш миниатюр (`src/thumbcache.rs`): ключ FNV-1a (стабилен между сборками) по
+      `path+mtime+size+th`, PNG на диске в `%LOCALAPPDATA%\Lumina\thumbs`, эвикция по бюджету 256 МБ
+      (`prune` фоном при старте). Консультируется в rayon-воркере декода миниатюр ДО тяжёлого декода;
+      переоткрытие папки — миниатюры из кэша, без повторного декода
+- [x] Префетч ±2 (`src/prefetch.rs`): in-memory LRU декодированных кадров с байтовым бюджетом 512 МБ
+      (сам ограничивается на тяжёлых RAW); заполняется при завершении `Full`, используется
+      `load_current` (быстрый путь `show_image`) для мгновенного перелистывания; guard
+      `prefetch_inflight` против повторных декодов соседей
+      ([дизайн](docs/superpowers/specs/2026-06-17-lumina-v0.5a-thumbnail-cache-prefetch-design.md))
+
+Код и юнит-тесты готовы (165 тестов зелёных + 10 `#[ignore]`; 11 новых в v0.5a: thumbcache 7,
+prefetch 4). Визуальную приёмку (кэш переживает переоткрытие папки; мгновенная навигация по
+посещённым соседям; память не растёт неограниченно) подтверждает пользователь вручную.
 
 ## Установленное окружение
 
