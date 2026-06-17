@@ -1148,10 +1148,14 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let lines = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
-                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.y as f32) / 50.0,
+                // Нормализуем дельту в «строки» по обеим осям. На Windows тачпад шлёт LineDelta
+                // и для вертикали (WM_MOUSEWHEEL), и для горизонтали (WM_MOUSEHWHEEL); PixelDelta —
+                // фолбэк для других платформ. Раньше горизонталь (lx) терялась → свайп не работал.
+                let (lx, ly) = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.x as f32 / 50.0, p.y as f32 / 50.0),
                 };
+                let lines = ly;
                 // EXIF popup: колесо скроллит список тегов.
                 if self.state.ui.exif_open {
                     if let (Some(r), Some(tags)) = (&self.renderer, &self.state.exif_tags) {
@@ -1182,33 +1186,23 @@ impl ApplicationHandler<UserEvent> for App {
                         layout::compute(win, self.state.scale, self.state.ui.bottom_factor, self.state.ui.fullscreen).carousel.w
                     }).unwrap_or(0.0);
                     let max_scroll = (content - view_w).max(0.0);
-                    // Смещение скролла: мышь (LineDelta) — дискретно по строкам; тачпад (PixelDelta) —
-                    // по доминирующей оси в пикселях, так что горизонтальный двухпальцевый жест
-                    // листает ленту напрямую, а вертикальный — как колесо.
-                    let d = match delta {
-                        winit::event::MouseScrollDelta::LineDelta(_, y) => y * step,
-                        winit::event::MouseScrollDelta::PixelDelta(p) => {
-                            if (p.x as f32).abs() >= (p.y as f32).abs() { p.x as f32 } else { p.y as f32 }
-                        }
-                    };
-                    self.state.ui.scroll = (self.state.ui.scroll - d).clamp(0.0, max_scroll);
+                    // Скролл по доминирующей оси: горизонтальный жест тачпада листает ленту,
+                    // вертикальное колесо/жест — тоже (как раньше). Обе оси — в «строках».
+                    let scroll_lines = if lx.abs() >= ly.abs() { lx } else { ly };
+                    self.state.ui.scroll = (self.state.ui.scroll - scroll_lines * step).clamp(0.0, max_scroll);
                     if let Some(w) = &self.window { w.request_redraw(); }
                 } else if let Some(_win) = win {
-                    // Тачпад: горизонтально-доминирующий PixelDelta → пошаговая навигация.
-                    if let winit::event::MouseScrollDelta::PixelDelta(p) = delta {
-                        let dx = p.x as f32;
-                        let dy = p.y as f32;
-                        let steps = crate::input::on_trackpad_pan(
-                            &mut self.state.trackpad_accum, dx, dy, crate::input::TRACKPAD_NAV_STEP_PX);
-                        if steps != 0 {
-                            // максимум один шаг за событие (инерционный бросок не пролистывает пачку)
-                            self.navigate(if steps > 0 { 1 } else { -1 });
-                            return;
-                        }
-                        // горизонтальный жест без полного шага — поглощаем (не зумим)
-                        if dx.abs() >= dy.abs() && dx != 0.0 {
-                            return;
-                        }
+                    // Тачпад: горизонтально-доминирующий жест → пошаговая навигация (порог в строках).
+                    let steps = crate::input::on_trackpad_pan(
+                        &mut self.state.trackpad_accum, lx, ly, crate::input::TRACKPAD_NAV_STEP_LINES);
+                    if steps != 0 {
+                        // максимум один шаг за событие (инерционный бросок не пролистывает пачку)
+                        self.navigate(if steps > 0 { 1 } else { -1 });
+                        return;
+                    }
+                    // горизонтальный жест без полного шага — поглощаем (не зумим)
+                    if lx.abs() >= ly.abs() && lx != 0.0 {
+                        return;
                     }
                     // zoom как в v0.3a (курсор скорректирован на titlebar)
                     let vw = self.renderer.as_ref().map(|r| r.viewer_size()).unwrap_or_default();
