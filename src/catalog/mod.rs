@@ -40,6 +40,37 @@ impl FolderCatalog {
         Self::sort_and_locate(files, opened)
     }
 
+    /// Чистое ядро пересбора: отфильтрованный список → отсортированный + индекс курсора
+    /// по прежнему пути. Без обращения к ФС (тестируемо).
+    fn rebuild_core(mut files: Vec<PathBuf>, prev_current: &Path) -> (Vec<PathBuf>, usize) {
+        files.sort_by(|a, b| {
+            let an = a.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            let bn = b.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            natord::compare(an, bn)
+        });
+        let current = relocate(&files, prev_current);
+        (files, current)
+    }
+
+    /// Пере-сканировать папку (повторное чтение ФС), сохранив текущий файл по пути.
+    /// Возвращает true, если набор файлов или индекс изменились.
+    pub fn refresh(&mut self) -> std::io::Result<bool> {
+        let prev_current = self.files.get(self.current).cloned().unwrap_or_default();
+        let dir = prev_current.parent()
+            .or_else(|| self.files.first().and_then(|p| p.parent()))
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let scanned: Vec<PathBuf> = std::fs::read_dir(&dir)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_file() && supported(&ext_lower(p)))
+            .collect();
+        let (files, current) = Self::rebuild_core(scanned, &prev_current);
+        let changed = files != self.files || current != self.current;
+        self.files = files;
+        self.current = current;
+        Ok(changed)
+    }
+
     fn sort_and_locate(mut files: Vec<PathBuf>, opened: &Path) -> Self {
         files.sort_by(|a, b| {
             let an = a.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -152,6 +183,17 @@ mod tests {
         assert_eq!(c.current_index(), 0);
         c.go_last();
         assert_eq!(c.current_index(), 2);
+    }
+
+    #[test]
+    fn rebuild_sorts_and_relocates() {
+        // моделируем результат повторного чтения папки: новый набор + прежний текущий путь
+        let new_files: Vec<PathBuf> = ["IMG_1.jpg", "IMG_2.jpg", "IMG_10.jpg", "IMG_3.jpg"]
+            .iter().map(PathBuf::from).collect();
+        let (sorted, current) = FolderCatalog::rebuild_core(new_files, Path::new("IMG_2.jpg"));
+        let names: Vec<&str> = sorted.iter().map(|p| p.file_name().unwrap().to_str().unwrap()).collect();
+        assert_eq!(names, vec!["IMG_1.jpg", "IMG_2.jpg", "IMG_3.jpg", "IMG_10.jpg"]); // натуральная сортировка
+        assert_eq!(current, 1); // IMG_2.jpg
     }
 
     #[test]
