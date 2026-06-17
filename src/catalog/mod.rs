@@ -1,6 +1,19 @@
 use crate::decoder::{ext_lower, supported};
 use std::path::{Path, PathBuf};
 
+/// Индекс курсора в новом списке после пересбора: позиция файла с тем же именем,
+/// что у прежнего текущего; если файл исчез — последний валидный индекс (или 0 для пустого).
+pub fn relocate(files: &[PathBuf], prev_current: &Path) -> usize {
+    if files.is_empty() {
+        return 0;
+    }
+    let prev_name = prev_current.file_name();
+    files
+        .iter()
+        .position(|p| p.file_name() == prev_name)
+        .unwrap_or(files.len() - 1)
+}
+
 pub struct FolderCatalog {
     files: Vec<PathBuf>,
     current: usize,
@@ -139,6 +152,26 @@ mod tests {
         assert_eq!(c.current_index(), 0);
         c.go_last();
         assert_eq!(c.current_index(), 2);
+    }
+
+    #[test]
+    fn relocate_keeps_existing_file() {
+        let files: Vec<PathBuf> = ["a.jpg", "b.jpg", "c.jpg"].iter().map(PathBuf::from).collect();
+        // текущий был b.jpg → индекс 1
+        assert_eq!(relocate(&files, Path::new("b.jpg")), 1);
+    }
+
+    #[test]
+    fn relocate_missing_file_clamps_to_last() {
+        let files: Vec<PathBuf> = ["a.jpg", "b.jpg"].iter().map(PathBuf::from).collect();
+        // z.jpg отсутствует → последний валидный (len-1 = 1)
+        assert_eq!(relocate(&files, Path::new("z.jpg")), 1);
+    }
+
+    #[test]
+    fn relocate_empty_is_zero() {
+        let files: Vec<PathBuf> = Vec::new();
+        assert_eq!(relocate(&files, Path::new("a.jpg")), 0);
     }
 
     #[test]
