@@ -340,6 +340,15 @@ pub enum PendingOp {
     Delete,
 }
 
+/// Какой бар подтверждения показан в футере (вместо булева флага части 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmKind {
+    None,
+    CloseWithPending,
+    OverwriteSave,
+    StripAll,
+}
+
 /// Состояние редактирования для отрисовки popup (часть 2).
 pub struct PopupEditState<'a> {
     pub pending: &'a BTreeMap<(String, String), PendingOp>,
@@ -351,8 +360,10 @@ pub struct PopupEditState<'a> {
     pub editor_sel_px: Option<(f32, f32)>,
     /// Индекс строки под курсором (из popup_rows) — для показа ✎/✕ и hover GPS.
     pub hovered_row: Option<usize>,
-    /// Показать бар подтверждения закрытия вместо обычного футера.
-    pub confirm_close: bool,
+    /// Активный бар подтверждения (закрытие/перезапись/стирание).
+    pub confirm: ConfirmKind,
+    /// Необратимый режим (тоггл): показывать кнопку «Стереть всё», danger-стиль.
+    pub overwrite_mode: bool,
     /// Есть ли несохранённые правки (для активности Save).
     pub has_pending: bool,
 }
@@ -628,25 +639,52 @@ pub fn build_popup(
         }
     }
 
-    // Футер: всегда виден. При confirm_close — бар подтверждения.
+    // Футер: при confirm != None — бар подтверждения; иначе тоггл + действия.
     let (save, cancel) = crate::ui::layout::popup_footer_buttons(&p, scale);
     cmds.push(DrawCmd::Rect { rect: p.footer, color: theme.popup_group_bg, radius: 0.0, layer: RectLayer::Bg });
+    let fpad = theme::POPUP_PAD * scale;
     let btn_text = |cmds: &mut Vec<DrawCmd>, rect: Rect, text: &str, bg: [f32; 4], fg: [f32; 4]| {
         cmds.push(DrawCmd::Rect { rect, color: bg, radius: 6.0 * scale, layer: RectLayer::Bg });
         cmds.push(DrawCmd::Text { rect, text: text.to_string(), size: theme::POPUP_BTN_SIZE * scale, color: fg, align: Align::Center, clip: Some(rect) });
     };
-    if edit.confirm_close {
-        let lr = Rect { x: p.footer.x + theme::POPUP_PAD * scale, y: p.footer.y, w: cancel.x - p.footer.x - theme::POPUP_PAD * scale, h: p.footer.h };
-        cmds.push(DrawCmd::Text { rect: lr, text: "Несохранённые изменения".to_string(), size: theme::POPUP_BTN_SIZE * scale, color: theme.text_primary, align: Align::Left, clip: Some(lr) });
-        // cancel→Отменить(discard), save→Сохранить; Keep ("Продолжить") — слева от cancel
-        let keep = Rect { x: cancel.x - (save.x - cancel.x), y: cancel.y, w: cancel.w, h: cancel.h };
-        btn_text(&mut cmds, keep, "Продолжить", theme.button_hover, theme.text_primary);
-        btn_text(&mut cmds, cancel, "Отменить", theme.button_hover, theme.text_primary);
-        btn_text(&mut cmds, save, "Сохранить", theme.save_bg, theme.text_primary);
-    } else {
-        btn_text(&mut cmds, cancel, "Отменить всё", theme.button_hover, theme.text_primary);
-        let (sbg, sfg) = if edit.has_pending { (theme.save_bg, theme.text_primary) } else { (theme.button_hover, theme.text_secondary) };
-        btn_text(&mut cmds, save, "Сохранить", sbg, sfg);
+    let label_rect = Rect { x: p.footer.x + fpad, y: p.footer.y, w: cancel.x - p.footer.x - fpad, h: p.footer.h };
+    match edit.confirm {
+        ConfirmKind::CloseWithPending => {
+            cmds.push(DrawCmd::Text { rect: label_rect, text: "Несохранённые изменения".to_string(), size: theme::POPUP_BTN_SIZE * scale, color: theme.text_primary, align: Align::Left, clip: Some(label_rect) });
+            let keep = Rect { x: cancel.x - (save.x - cancel.x), y: cancel.y, w: cancel.w, h: cancel.h };
+            btn_text(&mut cmds, keep, "Продолжить", theme.button_hover, theme.text_primary);
+            btn_text(&mut cmds, cancel, "Отменить", theme.button_hover, theme.text_primary);
+            btn_text(&mut cmds, save, "Сохранить", theme.save_bg, theme.text_primary);
+        }
+        ConfirmKind::OverwriteSave => {
+            cmds.push(DrawCmd::Text { rect: label_rect, text: "Необратимо, бэкапа не будет".to_string(), size: theme::POPUP_BTN_SIZE * scale, color: theme.danger, align: Align::Left, clip: Some(label_rect) });
+            btn_text(&mut cmds, cancel, "Отмена", theme.button_hover, theme.text_primary);
+            btn_text(&mut cmds, save, "Перезаписать", theme.danger, theme.text_primary);
+        }
+        ConfirmKind::StripAll => {
+            cmds.push(DrawCmd::Text { rect: label_rect, text: "Удалить ВСЕ метаданные, необратимо".to_string(), size: theme::POPUP_BTN_SIZE * scale, color: theme.danger, align: Align::Left, clip: Some(label_rect) });
+            btn_text(&mut cmds, cancel, "Отмена", theme.button_hover, theme.text_primary);
+            btn_text(&mut cmds, save, "Стереть", theme.danger, theme.text_primary);
+        }
+        ConfirmKind::None => {
+            // тоггл «Необратимо» (слева): бокс + подпись
+            let tog = crate::ui::layout::popup_footer_toggle(&p, scale);
+            let box_sz = 14.0 * scale;
+            let box_r = Rect { x: tog.x, y: tog.y + (tog.h - box_sz) * 0.5, w: box_sz, h: box_sz };
+            let box_bg = if edit.overwrite_mode { theme.danger } else { theme.popup_field_bg };
+            cmds.push(DrawCmd::Rect { rect: box_r, color: box_bg, radius: 3.0 * scale, layer: RectLayer::Bg });
+            let lbl = Rect { x: box_r.x + box_sz + 6.0 * scale, y: tog.y, w: tog.w - box_sz - 6.0 * scale, h: tog.h };
+            let lbl_col = if edit.overwrite_mode { theme.danger } else { theme.text_secondary };
+            cmds.push(DrawCmd::Text { rect: lbl, text: "Необратимо".to_string(), size: theme::POPUP_BTN_SIZE * scale, color: lbl_col, align: Align::Left, clip: Some(lbl) });
+            // «Стереть всё» — только в необратимом режиме
+            if edit.overwrite_mode {
+                let strip = crate::ui::layout::popup_footer_strip(&p, scale);
+                btn_text(&mut cmds, strip, "Стереть всё", theme.danger_bg, theme.danger);
+            }
+            btn_text(&mut cmds, cancel, "Отменить всё", theme.button_hover, theme.text_primary);
+            let (sbg, sfg) = if edit.has_pending { (theme.save_bg, theme.text_primary) } else { (theme.button_hover, theme.text_secondary) };
+            btn_text(&mut cmds, save, "Сохранить", sbg, sfg);
+        }
     }
     cmds
 }
@@ -804,7 +842,8 @@ mod tests {
             editor_caret_px: 0.0,
             editor_sel_px: None,
             hovered_row: None,
-            confirm_close: false,
+            confirm: ConfirmKind::None,
+            overwrite_mode: false,
             has_pending: false,
         }
     }
@@ -833,7 +872,7 @@ mod tests {
         let editor = crate::ui::textedit::TextEdit::new();
         let mut map: BTreeMap<(String, String), PendingOp> = BTreeMap::new();
         map.insert(("EXIF".into(), "Make".into()), PendingOp::Set("NEWVAL".into()));
-        let edit = PopupEditState { pending: &map, delete_gps: false, editing: None, editor: &editor, editor_caret_px: 0.0, editor_sel_px: None, hovered_row: None, confirm_close: false, has_pending: true };
+        let edit = PopupEditState { pending: &map, delete_gps: false, editing: None, editor: &editor, editor_caret_px: 0.0, editor_sel_px: None, hovered_row: None, confirm: ConfirmKind::None, overwrite_mode: false, has_pending: true };
         let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
         // новое значение отрисовано вместо старого
         assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "NEWVAL")));
@@ -847,7 +886,7 @@ mod tests {
         let search = crate::ui::textedit::TextEdit::new();
         let editor = crate::ui::textedit::TextEdit::new();
         let mut edit = empty_edit(&editor);
-        edit.confirm_close = true;
+        edit.confirm = ConfirmKind::CloseWithPending;
         edit.has_pending = true;
         let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
         assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text.contains("есохранён"))));
@@ -936,5 +975,47 @@ mod tests {
                 assert!(cl.y + cl.h <= p.body.y + p.body.h + 0.01, "и ниже body_bot");
             }
         }
+    }
+
+    #[test]
+    fn popup_overwrite_toggle_shows_strip() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let search = crate::ui::textedit::TextEdit::new();
+        let editor = crate::ui::textedit::TextEdit::new();
+        let mut edit = empty_edit(&editor);
+        edit.overwrite_mode = true;
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
+        assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Стереть всё")));
+        assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Необратимо")));
+    }
+
+    #[test]
+    fn popup_overwrite_save_confirm_bar() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let search = crate::ui::textedit::TextEdit::new();
+        let editor = crate::ui::textedit::TextEdit::new();
+        let mut edit = empty_edit(&editor);
+        edit.confirm = ConfirmKind::OverwriteSave;
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
+        assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Перезаписать")));
+        assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text.contains("бэкапа"))));
+    }
+
+    #[test]
+    fn popup_strip_confirm_bar() {
+        let win = glam::Vec2::new(1280.0, 800.0);
+        let theme = ThemePalette::dark();
+        let tags = sample_tags();
+        let search = crate::ui::textedit::TextEdit::new();
+        let editor = crate::ui::textedit::TextEdit::new();
+        let mut edit = empty_edit(&editor);
+        edit.confirm = ConfirmKind::StripAll;
+        let cmds = build_popup(win, 1.0, &theme, "a.jpg", Some(&tags), &search, 0.0, None, 0.0, None, true, true, &edit);
+        assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text == "Стереть")));
+        assert!(cmds.iter().any(|c| matches!(c, DrawCmd::Text { text, .. } if text.contains("ВСЕ метаданные"))));
     }
 }
