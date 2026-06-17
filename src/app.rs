@@ -101,6 +101,8 @@ pub struct AppState {
     pub prefetch: crate::prefetch::PrefetchCache,
     /// Пути соседей, для которых уже запущен фоновый декод (защита от повторных спавнов).
     pub prefetch_inflight: std::collections::HashSet<PathBuf>,
+    /// Накопитель горизонтального смещения тачпада (для пошаговой навигации свайпом).
+    pub trackpad_accum: f32,
 }
 
 impl AppState {
@@ -148,6 +150,7 @@ impl AppState {
             exif_hovered_row: None,
             prefetch: crate::prefetch::PrefetchCache::new(512 * 1024 * 1024),
             prefetch_inflight: std::collections::HashSet::new(),
+            trackpad_accum: 0.0,
         }
     }
 }
@@ -1139,6 +1142,22 @@ impl ApplicationHandler<UserEvent> for App {
                     self.state.ui.scroll = (self.state.ui.scroll - lines * step).clamp(0.0, max_scroll);
                     if let Some(w) = &self.window { w.request_redraw(); }
                 } else if let Some(_win) = win {
+                    // Тачпад: горизонтально-доминирующий PixelDelta → пошаговая навигация.
+                    if let winit::event::MouseScrollDelta::PixelDelta(p) = delta {
+                        let dx = p.x as f32;
+                        let dy = p.y as f32;
+                        let steps = crate::input::on_trackpad_pan(
+                            &mut self.state.trackpad_accum, dx, dy, crate::input::TRACKPAD_NAV_STEP_PX);
+                        if steps != 0 {
+                            // максимум один шаг за событие (инерционный бросок не пролистывает пачку)
+                            self.navigate(if steps > 0 { 1 } else { -1 });
+                            return;
+                        }
+                        // горизонтальный жест без полного шага — поглощаем (не зумим)
+                        if dx.abs() >= dy.abs() && dx != 0.0 {
+                            return;
+                        }
+                    }
                     // zoom как в v0.3a (курсор скорректирован на titlebar)
                     let vw = self.renderer.as_ref().map(|r| r.viewer_size()).unwrap_or_default();
                     let cursor_v = self.state.cursor - glam::Vec2::new(0.0, self.state.scale * theme::TITLEBAR_HEIGHT);
