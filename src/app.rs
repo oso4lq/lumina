@@ -647,6 +647,14 @@ impl App {
     }
 }
 
+/// Иконка окна из встроенного PNG (256×256). None при ошибке декода.
+fn window_icon() -> Option<winit::window::Icon> {
+    let bytes = include_bytes!("../assets/icon/lumina-256.png");
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (w, h) = (img.width(), img.height());
+    winit::window::Icon::from_rgba(img.into_raw(), w, h).ok()
+}
+
 /// Ресайз исходного RGBA до высоты `th` с сохранением аспекта (без кропа).
 /// Возвращает (rgba, tw, th), где tw = round(th × аспект).
 pub fn make_thumb(src: &[u8], sw: u32, sh: u32, th: u32) -> (Vec<u8>, u32, u32) {
@@ -680,10 +688,13 @@ impl ApplicationHandler<UserEvent> for App {
         if self.window.is_some() {
             return;
         }
-        let attrs = Window::default_attributes()
+        let mut attrs = Window::default_attributes()
             .with_title("Lumina")
             .with_decorations(false)
             .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
+        if let Some(icon) = window_icon() {
+            attrs = attrs.with_window_icon(Some(icon));
+        }
         let window = Arc::new(event_loop.create_window(attrs).expect("create_window"));
         match Renderer::new(window.clone()) {
             Ok(mut r) => {
