@@ -88,7 +88,6 @@ pub struct AppState {
     pub exif_editor: crate::ui::textedit::TextEdit,
     pub exif_confirm: crate::ui::scene::ConfirmKind,
     pub exif_overwrite_mode: bool,
-    pub exif_pending_strip_all: bool,
     pub exif_close_after_save: bool,
     pub exif_hovered_row: Option<usize>,
 }
@@ -134,7 +133,6 @@ impl AppState {
             exif_editor: crate::ui::textedit::TextEdit::new(),
             exif_confirm: crate::ui::scene::ConfirmKind::None,
             exif_overwrite_mode: false,
-            exif_pending_strip_all: false,
             exif_close_after_save: false,
             exif_hovered_row: None,
         }
@@ -327,7 +325,6 @@ impl App {
             self.state.exif_editor.clear();
             self.state.exif_confirm = crate::ui::scene::ConfirmKind::None;
             self.state.exif_overwrite_mode = false;
-            self.state.exif_pending_strip_all = false;
             self.state.exif_close_after_save = false;
             self.state.exif_hovered_row = None;
             let Some(cat) = &self.state.catalog else { return };
@@ -722,7 +719,6 @@ impl ApplicationHandler<UserEvent> for App {
                         // успех: очистить правки, перечитать теги, обновить заголовок
                         self.state.exif_pending.clear();
                         self.state.exif_pending_delete_gps = false;
-                        self.state.exif_pending_strip_all = false;
                         self.state.exif_editing = None;
                         self.state.exif_error = None;
                         self.state.exif_confirm = crate::ui::scene::ConfirmKind::None;
@@ -1104,7 +1100,6 @@ impl ApplicationHandler<UserEvent> for App {
                                 }
                                 hit::PopupRegion::FooterToggle => {
                                     self.state.exif_overwrite_mode = !self.state.exif_overwrite_mode;
-                                    if !self.state.exif_overwrite_mode { self.state.exif_pending_strip_all = false; }
                                 }
                                 hit::PopupRegion::FooterStrip => {
                                     self.state.exif_confirm = crate::ui::scene::ConfirmKind::StripAll;

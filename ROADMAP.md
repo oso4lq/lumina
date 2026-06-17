@@ -236,8 +236,8 @@ scene 4, hit 2; +1 `#[ignore]` интеграционный `write_real_jpg_set_
       `PopupEditState.confirm`/`overwrite_mode`; отрисовка тоггла «Необратимо» (danger-стиль во вкл.),
       кнопки «Стереть всё» (только в необратимом режиме) и трёх вариантов бара подтверждения;
       хит-тест `FooterToggle`/`FooterStrip` + обобщённые `ConfirmPrimary/Secondary/Tertiary`
-- [x] Интеграция в `app.rs`: состояние `exif_confirm`/`exif_overwrite_mode`/`exif_pending_strip_all`/
-      `exif_close_after_save`; `exif_save(mode)` + `exif_strip_all` на rayon; тоггл режима;
+- [x] Интеграция в `app.rs`: состояние `exif_confirm`/`exif_overwrite_mode`/`exif_close_after_save`;
+      `exif_save(mode)` + `exif_strip_all` на rayon; тоггл режима;
       `FooterSave` в необратимом режиме при наличии правок → бар «Перезаписать», иначе обычный Backup;
       цепочка закрытия-с-правками → подтверждение перезаписи; сброс необратимого режима после успешного
       сохранения (следующее разрушительное действие — снова осознанное); Esc-приоритет редактор → бар → закрытие
@@ -247,8 +247,7 @@ hit 2; +2 новых `#[ignore]` интеграционных — `write_overwri
 прогнаны на exiftool 13.59 — зелёные). Визуальную GUI-приёмку (правка RAF in-place без `.xmp`, режимы
 бэкап/необратимо, «Стереть всё», Esc на баре) подтверждает пользователь вручную.
 
-> Известное: поле `exif_pending_strip_all` пока write-only (задел под будущую «эксклюзивность»
-> стирания и построчных правок — в v0.4d не задействовано). **Бандл exiftool — v0.5.**
+> **Бандл exiftool — v0.5.**
 
 ## Установленное окружение
 
